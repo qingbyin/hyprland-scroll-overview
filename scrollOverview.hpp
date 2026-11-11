@@ -22,6 +22,7 @@
 #include "WorkspaceTitleUI.hpp"
 
 class CMonitor;
+class COverviewSearch;
 struct wl_event_source;
 
 class CScrollOverview : public IOverview {
@@ -61,7 +62,13 @@ class CScrollOverview : public IOverview {
     void         cancelWorkspaceTitleEdit();
     bool         isWorkspaceTitleEditing() const;
 
+    SDispatchResult windowSearchAction(const std::string& argument);
+    void            cancelWindowSearch();
+    bool            isWindowSearchActive() const;
+    bool            revealSearchWindow(PHLWINDOW window);
+
   private:
+    UP<COverviewSearch> windowSearch;
     enum class ECloseMode {
         COMMIT_SELECTION,
         PRESERVE_MONITOR_STATE,

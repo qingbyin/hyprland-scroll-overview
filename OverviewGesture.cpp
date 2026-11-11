@@ -2,6 +2,7 @@
 
 #include "scrollOverview.hpp"
 #include "OverviewOpen.hpp"
+#include "OverviewSearch.hpp"
 
 #include <algorithm>
 #include <hyprland/src/Compositor.hpp>
@@ -13,6 +14,9 @@ void COverviewGesture::begin(const ITrackpadGesture::STrackpadGestureBegin& e) {
 
     m_lastDelta   = 0.F;
     m_firstUpdate = true;
+    m_overview.reset();
+    if (OverviewSearch::active() || WorkspaceTitleInput::active())
+        return;
 
     const auto MONITOR  = Desktop::focusState()->monitor();
     if (!MONITOR)

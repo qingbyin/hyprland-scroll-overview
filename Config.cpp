@@ -1,3 +1,4 @@
+#include "OverviewSearch.hpp"
 #include "Config.hpp"
 
 #include <algorithm>
@@ -78,6 +79,14 @@ SDispatcher* findDispatcher(const std::string_view name) {
             .invalidArgError = "expected one of: select, close",
             .luaFunction     = [](lua_State* L) { return dispatcherFactoryLua(L, "window"); },
         },
+        {
+            .name            = "search",
+            .defaultArg      = "open",
+            .typeArgError    = "expected an optional string argument",
+            .invalidArgError = "expected open, toggle, close, or query <UTF-8 text>",
+            .argValidator    = [](std::string_view arg) { return OverviewSearch::validArgument(arg); },
+            .luaFunction     = [](lua_State* L) { return dispatcherFactoryLua(L, "search"); },
+        },
     };
 
     const auto MATCH = std::ranges::find_if(registrations, [name](const auto& registration) { return registration.name == name; });
@@ -96,12 +105,16 @@ int runDispatcherNow(lua_State* L, const SDispatcher& dispatcher, const char* ar
 }
 
 void pushDispatcherBindAction(lua_State* L, const char* name, const char* arg) {
-    const std::string CODE = "return function() return hl.plugin.scrolloverview._dispatch(\"" + std::string{name} + "\", \"" + std::string{arg} + "\") end";
-
-    if (luaL_loadstring(L, CODE.c_str()) != LUA_OK)
+    // Only constant source is compiled. Arguments are captured as Lua data;
+    // the closure keeps no C function pointer into an unloadable plugin.
+    constexpr auto FACTORY =
+        "local name, arg = ...; return function() "
+        "return hl.plugin.scrolloverview._dispatch(name, arg) end";
+    if (luaL_loadstring(L, FACTORY) != LUA_OK)
         lua_error(L);
-
-    if (lua_pcall(L, 0, 1, 0) != LUA_OK)
+    lua_pushstring(L, name);
+    lua_pushstring(L, arg);
+    if (lua_pcall(L, 2, 1, 0) != LUA_OK)
         lua_error(L);
 }
 
@@ -118,7 +131,8 @@ int runDispatcherActionLua(lua_State* L) {
 
     if (!DISPATCHER)
         return luaL_error(L, "_dispatch: unknown dispatcher '%s'", name);
-    if (!DISPATCHER->isArgValid(arg))
+    if (std::string_view{arg, lua_rawlen(L, 2)}.find('\0') != std::string_view::npos ||
+        !DISPATCHER->isArgValid(std::string_view{arg, lua_rawlen(L, 2)}))
         return luaL_error(L, "%s: invalid argument '%s', %s", name, arg, DISPATCHER->invalidArgError.data());
 
     return runDispatcherNow(L, *DISPATCHER, arg);
@@ -142,6 +156,8 @@ int dispatcherFactoryLua(lua_State* L, std::string_view name) {
             return luaL_error(L, "%s: %s", DISPATCHER->name.data(), DISPATCHER->typeArgError.data());
 
         arg = lua_tostring(L, 1);
+        if (std::string_view{arg, lua_rawlen(L, 1)}.find('\0') != std::string_view::npos)
+            return luaL_error(L, "%s: NUL is not allowed in dispatcher arguments", name.data());
     }
 
     if (!DISPATCHER->isArgValid(arg))

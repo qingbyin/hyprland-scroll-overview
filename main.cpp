@@ -28,6 +28,8 @@ using namespace Hyprutils::String;
 #include "scrollOverview.hpp"
 #include "OverviewGesture.hpp"
 #include "OverviewOpen.hpp"
+#include "OverviewSearch.hpp"
+#include "SearchInput.hpp"
 #include "Window.hpp"
 
 // Methods
@@ -330,6 +332,8 @@ SOverviewOpenResult openOverview(PHLMONITOR monitor, bool swipe) {
 }
 
 static SDispatchResult onOverviewDispatcher(std::string arg) {
+    if (OverviewSearchInput::passingHistoricalRelease())
+        return {};
     const auto [ACTION, TARGET] = splitOverviewArg(arg);
 
     if (ACTION == "select") {
@@ -391,6 +395,8 @@ static SDispatchResult onOverviewDispatcher(std::string arg) {
 }
 
 static SDispatchResult onNavigateDispatcher(std::string arg) {
+    if (OverviewSearchInput::passingHistoricalRelease())
+        return {};
     const auto OVERVIEW = dispatcherOverview();
 
     if (!OVERVIEW)
@@ -404,6 +410,8 @@ static SDispatchResult onNavigateDispatcher(std::string arg) {
 }
 
 static SDispatchResult onWindowDispatcher(std::string arg) {
+    if (OverviewSearchInput::passingHistoricalRelease())
+        return {};
     const auto OVERVIEW = scrollOverviewAt(g_pInputManager->getMouseCoordsInternal());
     if (!OVERVIEW)
         return {};
@@ -694,6 +702,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     g_configReloadHook = Event::bus()->m_events.config.reloaded.listen([] { reconcileNativeDragHook(); });
 
+    OverviewSearch::initInput();
+
     g_nativeDragMouseMoveHook = Event::bus()->m_events.input.mouse.move.listen([](Vector2D, Event::SCallbackInfo& info) {
         if (info.cancelled || g_unloading || scrollOverviews().empty())
             return;
@@ -709,6 +719,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     ScrollOverview::Config::registerDispatcher("overview", ::onOverviewDispatcher);
     ScrollOverview::Config::registerDispatcher("navigate", ::onNavigateDispatcher);
     ScrollOverview::Config::registerDispatcher("window", ::onWindowDispatcher);
+    ScrollOverview::Config::registerDispatcher("search", OverviewSearch::dispatch);
     ScrollOverview::Config::registerGesture(::onRegisterOverviewGesture, ::overviewGestureKeyword);
     WorkspaceTitleInput::init();
     ScrollOverview::Config::registerConfig();
@@ -720,6 +731,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
     Render::IHyprRenderer::currentPass(g_pHyprRenderer->context()).removeAllOfType("CScrollOverviewPassElement");
 
     g_unloading = true;
+    OverviewSearch::shutdownInput();
     g_nativeDragMouseMoveHook.reset();
     g_configReloadHook.reset();
     if (g_pScrollChangeWorkspaceHook)

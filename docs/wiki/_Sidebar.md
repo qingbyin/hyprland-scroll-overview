@@ -3,6 +3,7 @@
 - [Configuration](Configuration.md)
   - [Basic configuration](Basic-configuration.md)
   - [Dispatchers](Dispatchers.md)
+  - [Window search](Window-search.md)
   - [Keybind submap](Keybind-submap.md)
   - [Workspace titles](Workspace-titles.md)
 - [Advanced configuration](Advanced-configuration.md)

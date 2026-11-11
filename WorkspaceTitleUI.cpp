@@ -1,5 +1,6 @@
 #include "WorkspaceTitleUI.hpp"
 #include "scrollOverview.hpp"
+#include "SearchInput.hpp"
 
 #include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
@@ -29,9 +30,24 @@ extern "C" {
 namespace {
 CWorkspaceTitleUI* g_editor = nullptr;
 std::unique_ptr<WorkspaceTitles::Store> g_store;
-std::unordered_set<uint32_t> g_keys;
-std::unordered_set<uint32_t> g_buttons;
+template <typename Device> struct SConsumedInput {
+    WP<Device> device;
+    uint32_t code;
+};
+std::vector<SConsumedInput<IKeyboard>> g_keys;
+std::vector<SConsumedInput<IPointer>> g_buttons;
 CHyprSignalListener g_keyHook, g_buttonHook, g_axisHook;
+
+template <typename Device>
+bool captured(std::vector<SConsumedInput<Device>>& inputs, const SP<Device>& device, uint32_t code, bool release = false) {
+    std::erase_if(inputs, [](const auto& input) { return input.device.expired(); });
+    const auto found = std::ranges::find_if(inputs, [&](const auto& input) { return input.device.lock() == device && input.code == code; });
+    if (found == inputs.end())
+        return false;
+    if (release)
+        inputs.erase(found);
+    return true;
+}
 
 void notifyError(const std::string& error) {
     HyprlandAPI::addNotification(SCROLLOVERVIEW_HANDLE,
@@ -112,30 +128,42 @@ void WorkspaceTitleInput::init() {
     // Register before any overview's default/submap listeners. Always retain
     // release tracking until physical release, including after cancel/close.
     g_keyHook = Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent event, Event::SCallbackInfo& info) {
+        const auto device = OverviewSearchInput::keyboard();
         if (event.state == WL_KEYBOARD_KEY_STATE_RELEASED) {
-            if (g_keys.erase(event.keycode))
+            if (captured(g_keys, device, event.keycode, true))
                 info.cancelled = true;
+            else if (!info.cancelled && g_editor && !OverviewSearchInput::passingHistoricalRelease())
+                OverviewSearchInput::suppressHistoricalReleaseBinds();
             return;
         }
-        if (info.cancelled)
+        if (info.cancelled || OverviewSearchInput::passingHistoricalRelease())
             return;
         if (g_editor) {
-            g_keys.insert(event.keycode);
             info.cancelled = true;
+            if (OverviewSearchInput::hasPressRecord())
+                return;
+            if (!captured(g_keys, device, event.keycode))
+                g_keys.push_back({device, event.keycode});
             g_editor->key(event.keycode);
-        } else if (g_keys.contains(event.keycode))
+        } else if (captured(g_keys, device, event.keycode))
             info.cancelled = true;
     });
     g_buttonHook = Event::bus()->m_events.input.mouse.button.listen([](IPointer::SButtonEvent event, Event::SCallbackInfo& info) {
+        const auto device = OverviewSearchInput::pointer();
         if (event.state == WL_POINTER_BUTTON_STATE_RELEASED) {
-            if (g_buttons.erase(event.button))
+            if (captured(g_buttons, device, event.button, true))
                 info.cancelled = true;
+            else if (!info.cancelled && g_editor && !OverviewSearchInput::passingHistoricalRelease())
+                OverviewSearchInput::suppressHistoricalReleaseBinds();
             return;
         }
-        if (info.cancelled || !g_editor)
+        if (info.cancelled || OverviewSearchInput::passingHistoricalRelease() || !g_editor)
             return;
         info.cancelled = true;
-        g_buttons.insert(event.button);
+        if (OverviewSearchInput::hasPressRecord())
+            return;
+        if (!captured(g_buttons, device, event.button))
+            g_buttons.push_back({device, event.button});
         // A click outside cancels without selecting/closing/dragging a window.
         if (!g_editor->mouseButton(event.button, true))
             g_editor->cancel();
@@ -159,17 +187,27 @@ void WorkspaceTitleInput::shutdown() {
     g_store.reset();
 }
 
+bool WorkspaceTitleInput::active() {
+    return g_editor != nullptr;
+}
+
+std::string WorkspaceTitleInput::customTitle(const std::string& selector) {
+    return g_store ? g_store->get(selector) : std::string{};
+}
+
 CWorkspaceTitleUI::CWorkspaceTitleUI(CScrollOverview& overview) : m_overview(overview) {}
 CWorkspaceTitleUI::~CWorkspaceTitleUI() { cancel(); }
 bool CWorkspaceTitleUI::editing() const { return g_editor == this; }
 
 void CWorkspaceTitleUI::cancel() {
-    if (g_editor == this)
+    const bool wasEditing = editing();
+    if (wasEditing)
         g_editor = nullptr;
     m_selector.clear();
     m_editor.reset("");
     m_saveFailed = false;
-    m_overview.damage();
+    if (wasEditing && m_overview.pMonitor)
+        m_overview.damage();
 }
 
 CBox CWorkspaceTitleUI::titleBox(size_t index) const {
@@ -185,6 +223,14 @@ CBox CWorkspaceTitleUI::titleBox(size_t index) const {
 }
 
 void CWorkspaceTitleUI::begin(size_t index) {
+    if (!OverviewSearchInput::available()) {
+        notifyError("Text input hooks are unavailable for this Hyprland build");
+        return;
+    }
+    for (const auto& item : scrollOverviews()) {
+        if (auto* overview = dynamic_cast<CScrollOverview*>(item.get()))
+            overview->cancelWindowSearch();
+    }
     const auto& workspace = m_overview.images[index]->pWorkspace;
     if (g_editor)
         g_editor->cancel();
@@ -218,7 +264,9 @@ bool CWorkspaceTitleUI::mouseButton(uint32_t button, bool pressed) {
         const auto box = titleBox(i);
         if (box.width <= 0 || box.height <= 0 || !box.containsPoint(point))
             continue;
-        g_buttons.insert(button);
+        const auto device = OverviewSearchInput::pointer();
+        if (!captured(g_buttons, device, button))
+            g_buttons.push_back({device, button});
         if (button == primary) {
             const auto selector = Workspace::selector(*m_overview.images[i]->pWorkspace);
             // Clicking the current title preserves unsaved text.
@@ -243,7 +291,7 @@ void CWorkspaceTitleUI::save() {
 }
 
 void CWorkspaceTitleUI::key(uint32_t keycode) {
-    const auto keyboard = g_pSeatManager->m_keyboard.lock();
+    const auto keyboard = OverviewSearchInput::keyboard();
     if (!keyboard || !keyboard->m_xkbState)
         return;
     auto* state = keyboard->m_xkbState; // actual layout/modifiers, NOT bind-symbol state
@@ -308,8 +356,8 @@ void CWorkspaceTitleUI::render() {
             continue;
         const float alpha = m_overview.workspaceOverviewAlpha(i);
         const bool active = editing() && selector == m_selector;
-        const auto color = active ? (m_saveFailed ? CHyprColor{0.55, 0.08, 0.05, 0.98 * alpha} : CHyprColor{0.08, 0.24, 0.36, 0.98 * alpha})
-                                  : CHyprColor{0.06, 0.07, 0.09, 0.94 * alpha};
+        const auto color = active ? (m_saveFailed ? CHyprColor{0.55F, 0.08F, 0.05F, 0.98F * alpha} : CHyprColor{0.08F, 0.24F, 0.36F, 0.98F * alpha})
+                                  : CHyprColor{0.06F, 0.07F, 0.09F, 0.94F * alpha};
         g_pHyprRenderer->draw(g_pHyprRenderer->context(), CRectPassElement::SRectData{.box = bar, .color = color}, {});
         const int padding = std::max(1, static_cast<int>(6 * monitor->m_scale));
         const int width = static_cast<int>(bar.width) - 2 * padding;

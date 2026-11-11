@@ -97,6 +97,15 @@ workspace 3 can display `开发` without changing its Hyprland name or number.
 See [Workspace titles](docs/wiki/Workspace-titles.md) for configuration,
 UTF-8 input, persistence, and the direct Lua setting function.
 
+## Window search
+
+`scrolloverview:search open` opens a global window search inside the preview.
+Use `hl.plugin.scrolloverview.search("open")` in Lua. Enter selects and reveals
+its result without closing the overview; Escape cancels only search.
+Search works with or without an overview submap. See
+[Window search](docs/wiki/Window-search.md) for controls, UTF-8 queries,
+eligibility limits and offline tests.
+
 ## Documentation
 
 The complete documentation is available in the [ScrollOverview wiki](https://github.com/yayuuu/hyprland-scroll-overview/wiki). It covers all configuration options, keybinds, submaps, gestures, dispatchers, and advanced Lua examples.

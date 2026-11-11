@@ -13,6 +13,8 @@ namespace Render { class ITexture; }
 namespace WorkspaceTitleInput {
 void init();
 void shutdown();
+bool active();
+std::string customTitle(const std::string& selector);
 }
 
 class CWorkspaceTitleUI {

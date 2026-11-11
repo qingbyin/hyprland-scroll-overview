@@ -33,10 +33,10 @@ pan, or pending submap mouse actions must finish before editing can begin.
 
 Editing also works when a `scrolloverview` submap is configured. Key presses
 belonging to the editor and their releases are consumed before the default
-overview handlers. Release tracking survives Enter, Escape, switching titles,
-and overview destruction; the remaining physical releases are still consumed.
-Keys pressed before editing are not claimed retroactively, so their releases
-can complete the original input sequence.
+overview handlers. Release tracking is per input device and survives Enter,
+Escape, switching titles, and overview destruction. Keys pressed before
+editing are not claimed retroactively: their releases complete Hyprland's
+state cleanup, with new release/deferred bindings suppressed.
 
 Input uses the keyboard's actual XKB state, including its active layout,
 Shift, and AltGr, rather than the symbol state used for key bindings. This is
@@ -93,8 +93,8 @@ hl.plugin.scrolloverview.set_workspace_title("3", "") -- clear the override
 The first argument is the exact canonical workspace selector returned by
 Hyprland's `Workspace::selector`: numbered `3` and named `name:3` are separate
 keys. No workspace needs to be open when setting a title. Existing titles for
-other selectors are preserved. A named workspace's native rename changes its
-selector; its old private title remains associated with the old selector.
+other selectors are preserved. Recreating a named workspace under a different
+address uses a different selector; aliases are not migrated automatically.
 
 This function saves immediately; it is not a binding-action factory. It can
 also be called from a Lua binding callback. Calling it during configuration
@@ -149,17 +149,20 @@ void cancelWorkspaceTitleEdit();
 bool isWorkspaceTitleEditing() const;
 ```
 
-A search entry point should cancel title editing before opening its input.
-If search shortcuts must work while a title is being edited, register that
-shortcut listener before `WorkspaceTitleInput::init()` and consume only its
-own shortcut. Title listeners respect `info.cancelled`. Other search handlers
-must also respect it, including the release of a title-owned Enter/Escape.
-The title release guards remain registered until plugin unload, independent
-of the lifetime of any one overview.
+Title editing and window search are mutually exclusive across monitors.
+Entering search cancels the current title draft. While either editor owns
+input, normal overview shortcuts do not run; Escape leaves that editor without
+closing the preview. Custom titles are included in search and result details.
+
+Both editors use `SearchInput.*` to obtain the actual source keyboard and
+finish historical releases without triggering new bindings. If those
+version-specific hooks cannot be installed, clicking a title reports an input
+error; the direct Lua setter and display of persisted titles remain available.
+Title release guards stay registered until plugin unload.
 
 `WorkspaceTitles.*` contains the independently testable store and editor;
 `WorkspaceTitleUI.*` contains the Hyprland input and rendering integration.
-The tests deliberately use `.cc`, outside the CMake/Meson `*.cpp` globs.
+All test sources are excluded from the CMake/Meson root-level source lists.
 
 ```bash
 make test-workspace-titles
