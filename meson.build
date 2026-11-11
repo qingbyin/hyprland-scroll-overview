@@ -18,7 +18,8 @@ add_project_arguments(
   ],
   language: 'cpp')
 
-globber = run_command('find', '.', '-name', '*.cpp', check: true)
+# Exclude tests/ and generated compiler checks in build directories.
+globber = run_command('find', '.', '-maxdepth', '1', '-name', '*.cpp', check: true)
 src = globber.stdout().strip().split('\n')
 
 version_header = custom_target(

@@ -7,7 +7,8 @@ project(scrolloverview
 
 set(CMAKE_CXX_STANDARD 23)
 
-file(GLOB_RECURSE SRC "*.cpp")
+# Plugin sources live at the root; never pull tests or build trees into it.
+file(GLOB SRC CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
 add_library(scrolloverview SHARED ${SRC})
 

@@ -66,4 +66,20 @@ Acts on the window under the mouse cursor.
 | `select` | focus/select the window under the mouse cursor |
 | `close` | close the window under the mouse cursor |
 
+### `hl.plugin.scrolloverview.search`
+
+Search windows across ordinary and named workspaces on all enabled monitors.
+The traditional equivalent is `scrolloverview:search`.
+
+- `open` (default): enter search, opening an overview if needed.
+- `toggle`: enter or cancel search without closing the overview.
+- `close`: cancel search only.
+- `query <text>`: enter search and replace its UTF-8 query.
+  `query` alone clears the query.
+
+Enter reveals and selects the chosen window in its monitor's overview.
+Escape cancels only search, including when an overview submap is configured.
+For input controls, filtering and safe UTF-8 arguments, see
+[Window search](Window-search.md).
+
 [Back to Configuration](Configuration.md)

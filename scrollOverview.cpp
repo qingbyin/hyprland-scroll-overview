@@ -73,6 +73,8 @@
 #include "OverviewOpen.hpp"
 #include "OverviewPassElement.hpp"
 #include "OverviewRender.hpp"
+#include "OverviewSearch.hpp"
+#include "SearchInput.hpp"
 #include "Window.hpp"
 
 static PHLWINDOW getOverviewFullscreenVisibilityWindow(const PHLWORKSPACE& workspace, const PHLWINDOW& fallback = {});
@@ -1023,6 +1025,7 @@ static void moveOverviewTargetNextToWindow(const SP<Layout::ITarget>& target, co
 }
 
 CScrollOverview::~CScrollOverview() {
+    cancelWindowSearch();
     if (closeRemovalIdle)
         wl_event_source_remove(closeRemovalIdle);
     cancelWindowDrag();
@@ -1223,7 +1226,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     };
 
     auto onTouchMove = [this](ITouch::SMotionEvent, Event::SCallbackInfo& info) {
-        if (closing || scrollOverviewAt(g_pInputManager->getMouseCoordsInternal()).get() != this)
+        if (info.cancelled || closing || scrollOverviewAt(g_pInputManager->getMouseCoordsInternal()).get() != this)
             return;
 
         info.cancelled    = true;
@@ -1232,7 +1235,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     };
 
     auto onMouseButton = [this](IPointer::SButtonEvent event, Event::SCallbackInfo& info) {
-        if (info.cancelled)
+        if (info.cancelled || OverviewSearchInput::passingHistoricalRelease())
             return;
 
         // Extra buttons have no built-in overview action. Let Hyprland handle
@@ -1508,7 +1511,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     };
 
     auto onCursorSelect = [this](auto, Event::SCallbackInfo& info) {
-        if (closing || scrollOverviewAt(g_pInputManager->getMouseCoordsInternal()).get() != this)
+        if (info.cancelled || closing || scrollOverviewAt(g_pInputManager->getMouseCoordsInternal()).get() != this)
             return;
 
         if (isPointerOnTopLayer(pMonitor.lock()))
@@ -1644,7 +1647,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     };
 
     auto onKeyboardKey = [this](IKeyboard::SKeyEvent event, Event::SCallbackInfo& info) {
-        if (closing || event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
+        if (info.cancelled || closing || event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
             return;
 
         const auto KEYSYM = getOverviewKeysym(event);
@@ -1703,7 +1706,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
         keyboardKeyHook = Event::bus()->m_events.input.keyboard.key.listen(onKeyboardKey);
 
     dragKeyboardKeyHook = Event::bus()->m_events.input.keyboard.key.listen([this](IKeyboard::SKeyEvent event, Event::SCallbackInfo& info) {
-        if (closing || !dragActiveWindow || event.state != WL_KEYBOARD_KEY_STATE_PRESSED || getOverviewKeysym(event) != XKB_KEY_Escape)
+        if (info.cancelled || closing || !dragActiveWindow || event.state != WL_KEYBOARD_KEY_STATE_PRESSED || getOverviewKeysym(event) != XKB_KEY_Escape)
             return;
 
         info.cancelled = true;
@@ -5293,6 +5296,7 @@ void CScrollOverview::close(ECloseMode mode) {
     if (closeApplied)
         return;
     closeApplied = true;
+    cancelWindowSearch();
 
     const bool PRESERVEMONITORSTATE = mode == ECloseMode::PRESERVE_MONITOR_STATE;
     const bool ACTIVATESELECTION    = !PRESERVEMONITORSTATE && activeScrollOverview().get() == this;
@@ -5692,6 +5696,9 @@ void CScrollOverview::render() {
         }
     }
 
+    if (windowSearch)
+        windowSearch->render();
+
     sendOverviewFrameCallbacks(NOW);
 }
 
@@ -5710,6 +5717,7 @@ static Vector2D hyprlerp(const Vector2D& from, const Vector2D& to, const float p
 void CScrollOverview::setClosing(bool closing_) {
     closing = closing_;
     if (closing) {
+        cancelWindowSearch();
         removeFromCrossMonitorDragSession(this);
         cancelWindowDrag();
         transferSharedStateOwnership();
@@ -5723,6 +5731,7 @@ void CScrollOverview::setClosing(bool closing_) {
 }
 
 void CScrollOverview::releaseInputListeners() {
+    cancelWindowSearch();
     if (scrollingPanPointerDown)
         endScrollingPan();
     releaseTopLayerPointerButtons(Time::millis(Time::steadyNow()));
@@ -5835,4 +5844,81 @@ void CScrollOverview::onSwipeEnd() {
 
     (*scale)    = ScrollOverview::Config::getScale(pMonitor.lock());
     m_isSwiping = false;
+}
+
+bool CScrollOverview::revealSearchWindow(PHLWINDOW window) {
+    if (!OverviewSearch::eligible(window) ||
+        std::ranges::find(Desktop::windowState()->windows(), window) == Desktop::windowState()->windows().end())
+        return false;
+    const auto monitor = pMonitor.lock();
+    const auto workspace = window->m_workspace;
+    if (!monitor || workspace->m_monitor != monitor)
+        return false;
+    if (closing)
+        reopen();
+
+    redrawAll();
+    const auto found = std::ranges::find_if(images, [&](const auto& image) { return image->pWorkspace == workspace; });
+    if (found == images.end())
+        return false;
+
+    // Use the monitor API, NOT Config::Actions::changeWorkspace: that action
+    // intentionally tears down every overview via hkChangeWorkspace.
+    Desktop::focusState()->rawMonitorFocus(monitor);
+    if (monitor->m_activeSpecialWorkspace)
+        monitor->setSpecialWorkspace(nullptr, true);
+    changeOverviewWorkspace(monitor, workspace);
+    if (monitor->m_activeWorkspace != workspace)
+        return false;
+    if (startedOn != workspace)
+        onWorkspaceChange();
+
+    // Focus the actual client after its workspace is active, without a cursor
+    // warp or an overview close. This also keeps subsequent keyboard navigation
+    // on the destination monitor rather than the source of the search.
+    Desktop::focusState()->fullWindowFocus(window, Desktop::FOCUS_REASON_KEYBIND);
+    if (Desktop::focusState()->window() != window)
+        return false;
+    if (const auto algo = overviewScrollingAlgorithmForWorkspace(workspace); algo && !window->isFloating()) {
+        const auto data = algo->dataFor(window->layoutTarget(), true);
+        const auto column = data ? data->column.lock() : nullptr;
+        if (column && algo->m_scrollingData) {
+            const auto controller = algo->m_scrollingData->controller.get();
+            const bool inhibited = controller && controller->getScrollInhibitor().isInhibited;
+            if (inhibited)
+                algo->uninhibitScroll();
+            // Keep inhibition enabled, but freeze at the explicitly requested
+            // destination rather than restoring the old off-screen offset.
+            auto restoreInhibition = Hyprutils::Utils::CScopeGuard([algo, inhibited] {
+                if (inhibited)
+                    algo->inhibitScroll();
+            });
+            algo->m_scrollingData->centerOrFitCol(column);
+            algo->m_scrollingData->recalculate(true);
+            algo->focusTargetUpdate(window->layoutTarget());
+        }
+    }
+    syncWorkspaceGeometry(workspace);
+    trackpadWorkspaceFollowing = false;
+    trackpadTapeFollowing = false;
+    trackpadGestureSettlePending = false;
+    trackpadScrollAccum = 0;
+    workspaceInsertTransition.active = false;
+    scale->setValueAndWarp(ScrollOverview::Config::getScale(monitor));
+    viewOffset->setValueAndWarp(Vector2D{});
+    redrawAll();
+    rebuildPending = false;
+    for (size_t i = 0; i < images.size(); ++i) {
+        if (images[i]->pWorkspace != workspace)
+            continue;
+        const auto box = getOverviewWindowBox(window, monitor, scale->value(), viewOffset->value(), 0.F, layout);
+        if (box.empty() || !overviewBoxIntersectsMonitor(box, monitor))
+            return false;
+        selectOverviewWindow(window, i, false);
+        markBlurDirty();
+        requestInputFrame();
+        damage();
+        return true;
+    }
+    return false;
 }
