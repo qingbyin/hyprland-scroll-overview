@@ -407,6 +407,12 @@ static void defineConfigValues() {
     addValue(makeShared<CFloatValue>("plugin:scrolloverview:scale", "overview scale", 0.5F, SFloatValueOptions{.min = 0.1F, .max = 0.9F}));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:workspace_gap", "gap between overview workspaces", 0, SIntValueOptions{.min = 0}));
     addValue(makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", Hyprlang::STRING{"vertical"}));
+    addValue(makeShared<CBoolValue>("plugin:scrolloverview:titles:enabled", "show editable plugin-private workspace titles", true));
+    addValue(makeShared<CStringValue>("plugin:scrolloverview:titles:font", "workspace title font family", Hyprlang::STRING{"sans-serif"}));
+    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:font_size", "workspace title font size in logical pixels", 14,
+                                   SIntValueOptions{.min = 6, .max = 64}));
+    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:height", "workspace title bar height in logical pixels", 30,
+                                   SIntValueOptions{.min = 16, .max = 128}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:cross_monitor_drag", "enable cross-monitor window dragging", false));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:input:scroll_event_delay", "minimum delay (ms) between discrete scroll steps (wheel workspace nav and trackpad focus stepping)", 200, SIntValueOptions{.min = 0}));
     addValue(makeShared<CFloatValue>("plugin:scrolloverview:input:touchpad_scroll_factor", "overview touchpad scroll factor", 1.F,
