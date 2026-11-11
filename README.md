@@ -110,6 +110,14 @@ eligibility limits and offline tests.
 
 The complete documentation is available in the [ScrollOverview wiki](https://github.com/yayuuu/hyprland-scroll-overview/wiki). It covers all configuration options, keybinds, submaps, gestures, dispatchers, and advanced Lua examples.
 
+## Development and safe testing
+
+Run `make test` before integration testing. Plugins execute inside Hyprland;
+a memory error can terminate the entire graphical session.
+See [Safe testing](docs/wiki/Safe-testing.md) for offline regression tests,
+an opt-in isolated nested launcher and virtual-machine testing.
+The launcher never loads a plugin into the existing host compositor.
+
 ## Supported plugins
 
 - `hyprbars`

@@ -64,7 +64,7 @@ using TMouseButton = void (*)(CInputManager*, IPointer::SButtonEvent,
                              SP<IPointer>);
 
 void keyboardKey(CInputManager* manager, const IKeyboard::SKeyEvent& event,
-                 SP<IKeyboard> device) {
+                 const SP<IKeyboard> device) {
     const auto original =
         reinterpret_cast<TKeyboardKey>(keyboardHook->m_original);
     SInputContext current{
@@ -79,11 +79,13 @@ void keyboardKey(CInputManager* manager, const IKeyboard::SKeyEvent& event,
         cleanupSyntheticRecord(current);
     });
     inputContext = &current;
-    original(manager, event, std::move(device));
+    // Preserve the incoming owner: a detoured optimized caller may cache its
+    // control block for cleanup instead of rereading the argument after return.
+    original(manager, event, device);
 }
 
 void mouseButton(CInputManager* manager, IPointer::SButtonEvent event,
-                 SP<IPointer> device) {
+                 const SP<IPointer> device) {
     const auto original =
         reinterpret_cast<TMouseButton>(pointerHook->m_original);
     SInputContext current{
@@ -97,7 +99,8 @@ void mouseButton(CInputManager* manager, IPointer::SButtonEvent event,
         inputContext = previous;
     });
     inputContext = &current;
-    original(manager, event, std::move(device));
+    // Copy here too: do not invalidate the detoured caller's cached cleanup.
+    original(manager, event, device);
 }
 
 void* findInputFunction(const std::string& name,
