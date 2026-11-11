@@ -19,6 +19,7 @@
 #include "Config.hpp"
 #include "DropIndicator.hpp"
 #include "IOverview.hpp"
+#include "WorkspaceTitleUI.hpp"
 
 class CMonitor;
 struct wl_event_source;
@@ -57,6 +58,8 @@ class CScrollOverview : public IOverview {
 
     void         fullRender() override;
     bool         adoptNativeWindowDrag(PHLWINDOW expectedWindow = {});
+    void         cancelWorkspaceTitleEdit();
+    bool         isWorkspaceTitleEditing() const;
 
   private:
     enum class ECloseMode {
@@ -173,6 +176,8 @@ class CScrollOverview : public IOverview {
     void   activateSubmapIfConfigured();
     void   restoreSubmapIfActive();
     bool   dispatchSubmapMouseClick(uint32_t button);
+    CBox         workspaceTitlePreviewBox(size_t workspaceIdx) const;
+    std::unique_ptr<CWorkspaceTitleUI> workspaceTitles;
     static int realtimePreviewTimerCallback(void* data);
 
     size_t viewportCurrentWorkspace = 0;
@@ -334,5 +339,6 @@ class CScrollOverview : public IOverview {
     double                           trackpadGestureSettleOffset  = 0.0;
 
     friend class CScrollOverviewPassElement;
+    friend class CWorkspaceTitleUI;
     friend void removeOverview(IOverview* overview);
 };

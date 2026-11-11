@@ -88,6 +88,15 @@ Set `cross_monitor_drag = true` to drag windows between monitors through ScrollO
 
 This setting does not affect overview-origin drags with `toggle all` because every overview is already open. Existing multi-monitor commands remain available when it is disabled.
 
+## Workspace titles
+
+Each workspace preview has an editable title bar. Click it to edit, press
+Enter to save, or Escape to cancel. Titles belong only to ScrollOverview:
+workspace 3 can display `开发` without changing its Hyprland name or number.
+
+See [Workspace titles](docs/wiki/Workspace-titles.md) for configuration,
+UTF-8 input, persistence, and the direct Lua setting function.
+
 ## Documentation
 
 The complete documentation is available in the [ScrollOverview wiki](https://github.com/yayuuu/hyprland-scroll-overview/wiki). It covers all configuration options, keybinds, submaps, gestures, dispatchers, and advanced Lua examples.

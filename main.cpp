@@ -710,6 +710,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     ScrollOverview::Config::registerDispatcher("navigate", ::onNavigateDispatcher);
     ScrollOverview::Config::registerDispatcher("window", ::onWindowDispatcher);
     ScrollOverview::Config::registerGesture(::onRegisterOverviewGesture, ::overviewGestureKeyword);
+    WorkspaceTitleInput::init();
     ScrollOverview::Config::registerConfig();
 
     return {"scrolloverview", "A plugin for an overview", "Vaxry, yayuuu", SCROLLOVERVIEW_VERSION};
@@ -724,6 +725,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
     if (g_pScrollChangeWorkspaceHook)
         g_pScrollChangeWorkspaceHook->unhook();
     clearScrollOverviews();
+    WorkspaceTitleInput::shutdown();
     disableScrollOverviewHooks();
     OverviewWindow::cleanupDecorationRenderer();
 

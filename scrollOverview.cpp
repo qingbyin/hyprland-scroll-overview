@@ -1023,6 +1023,7 @@ static void moveOverviewTargetNextToWindow(const SP<Layout::ITarget>& target, co
 }
 
 CScrollOverview::~CScrollOverview() {
+    cancelWorkspaceTitleEdit();
     if (closeRemovalIdle)
         wl_event_source_remove(closeRemovalIdle);
     cancelWindowDrag();
@@ -1032,6 +1033,7 @@ CScrollOverview::~CScrollOverview() {
     restoreSubmapIfActive();
     if (const auto OPENGL = g_pHyprRenderer ? g_pHyprRenderer->glBackend() : WP<Render::GL::CHyprOpenGLImpl>{})
         OPENGL->makeEGLCurrent();
+    workspaceTitles.reset();
     if (realtimePreviewTimer) {
         wl_event_source_remove(realtimePreviewTimer);
         realtimePreviewTimer = nullptr;
@@ -1114,6 +1116,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     emitFullscreenVisibilityState(initialFullscreenWindow ? initialFullscreenWindow : Desktop::focusState()->window(), true);
 
     lastMousePosLocal = getOverviewMousePosLocal(pMonitor.lock());
+    workspaceTitles = std::make_unique<CWorkspaceTitleUI>(*this);
 
     auto onMouseMove = [this](Vector2D, Event::SCallbackInfo& info) {
         if (info.cancelled)
@@ -1303,6 +1306,11 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
         if (POINTERONTOPLAYER) {
             submapMouseClickPending = false;
             submapMouseClickButton  = 0;
+            return;
+        }
+
+        if (workspaceTitles && workspaceTitles->mouseButton(event.button, event.state == WL_POINTER_BUTTON_STATE_PRESSED)) {
+            info.cancelled = true;
             return;
         }
 
@@ -1644,7 +1652,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     };
 
     auto onKeyboardKey = [this](IKeyboard::SKeyEvent event, Event::SCallbackInfo& info) {
-        if (closing || event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
+        if (info.cancelled || closing || event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
             return;
 
         const auto KEYSYM = getOverviewKeysym(event);
@@ -1703,7 +1711,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
         keyboardKeyHook = Event::bus()->m_events.input.keyboard.key.listen(onKeyboardKey);
 
     dragKeyboardKeyHook = Event::bus()->m_events.input.keyboard.key.listen([this](IKeyboard::SKeyEvent event, Event::SCallbackInfo& info) {
-        if (closing || !dragActiveWindow || event.state != WL_KEYBOARD_KEY_STATE_PRESSED || getOverviewKeysym(event) != XKB_KEY_Escape)
+        if (info.cancelled || closing || !dragActiveWindow || event.state != WL_KEYBOARD_KEY_STATE_PRESSED || getOverviewKeysym(event) != XKB_KEY_Escape)
             return;
 
         info.cancelled = true;
@@ -5682,6 +5690,9 @@ void CScrollOverview::render() {
 
     renderDraggedWindow(MONITOR, ACTIVEIDX, PITCH, SCALE, NOW);
     renderPinnedFloatingWindows(MONITOR, SCALE, NOW);
+    // Draw titles after every workspace/window, including overflowing windows.
+    if (workspaceTitles)
+        workspaceTitles->render();
 
     for (const auto LAYER : {ZWLR_LAYER_SHELL_V1_LAYER_TOP, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY}) {
         for (auto const& ls : MONITOR->m_layerSurfaceLayers[LAYER]) {
@@ -5693,6 +5704,25 @@ void CScrollOverview::render() {
     }
 
     sendOverviewFrameCallbacks(NOW);
+}
+
+CBox CScrollOverview::workspaceTitlePreviewBox(size_t workspaceIdx) const {
+    const auto monitor = pMonitor.lock();
+    if (!monitor || workspaceIdx >= images.size())
+        return {};
+    const auto renderScale = scale->value();
+    const auto pitch = getWorkspaceRenderedPitch(monitor, renderScale, layout);
+    return getOverviewWorkspaceBox(monitor, renderScale, viewOffset->value(),
+        workspaceOverviewOffset(workspaceIdx, activeWorkspaceIndex(), pitch), layout);
+}
+
+void CScrollOverview::cancelWorkspaceTitleEdit() {
+    if (workspaceTitles)
+        workspaceTitles->cancel();
+}
+
+bool CScrollOverview::isWorkspaceTitleEditing() const {
+    return workspaceTitles && workspaceTitles->editing();
 }
 
 void CScrollOverview::fullRender() {
@@ -5710,6 +5740,7 @@ static Vector2D hyprlerp(const Vector2D& from, const Vector2D& to, const float p
 void CScrollOverview::setClosing(bool closing_) {
     closing = closing_;
     if (closing) {
+        cancelWorkspaceTitleEdit();
         removeFromCrossMonitorDragSession(this);
         cancelWindowDrag();
         transferSharedStateOwnership();
@@ -5723,6 +5754,7 @@ void CScrollOverview::setClosing(bool closing_) {
 }
 
 void CScrollOverview::releaseInputListeners() {
+    cancelWorkspaceTitleEdit();
     if (scrollingPanPointerDown)
         endScrollingPan();
     releaseTopLayerPointerButtons(Time::millis(Time::steadyNow()));

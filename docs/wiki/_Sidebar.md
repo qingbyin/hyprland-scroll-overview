@@ -4,6 +4,7 @@
   - [Basic configuration](Basic-configuration.md)
   - [Dispatchers](Dispatchers.md)
   - [Keybind submap](Keybind-submap.md)
+  - [Workspace titles](Workspace-titles.md)
 - [Advanced configuration](Advanced-configuration.md)
   - [Wallpaper layers](Wallpaper-layers.md)
   - [Per-monitor configuration](Per-monitor-configuration.md)
