@@ -90,9 +90,13 @@ This setting does not affect overview-origin drags with `toggle all` because eve
 
 ## Workspace titles
 
-Each workspace preview has an editable title bar. Click it to edit, press
-Enter to save, or Escape to cancel. Titles belong only to ScrollOverview:
-workspace 3 can display `开发` without changing its Hyprland name or number.
+Each workspace preview has a transparent, centered title bar with larger text.
+The native workspace name and editable title are separated by four spaces.
+Click to edit, press Enter to save, or Escape to cancel. Fcitx5 composition and
+candidate selection support Chinese input. Titles belong only to ScrollOverview:
+workspace 3 can display `3    开发` without changing its Hyprland name or number.
+Building requires the `dbus-1` development package; Chinese composition requires
+a running Fcitx5 instance and a configured Chinese input method.
 
 See [Workspace titles](docs/wiki/Workspace-titles.md) for configuration,
 UTF-8 input, persistence, and the direct Lua setting function.
