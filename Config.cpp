@@ -425,9 +425,9 @@ static void defineConfigValues() {
     addValue(makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", Hyprlang::STRING{"vertical"}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:titles:enabled", "show editable plugin-private workspace titles", true));
     addValue(makeShared<CStringValue>("plugin:scrolloverview:titles:font", "workspace title font family", Hyprlang::STRING{"sans-serif"}));
-    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:font_size", "workspace title font size in logical pixels", 14,
+    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:font_size", "workspace title font size in logical pixels", 22,
                                    SIntValueOptions{.min = 6, .max = 64}));
-    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:height", "workspace title bar height in logical pixels", 30,
+    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:height", "workspace title bar height in logical pixels", 40,
                                    SIntValueOptions{.min = 16, .max = 128}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:cross_monitor_drag", "enable cross-monitor window dragging", false));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:input:scroll_event_delay", "minimum delay (ms) between discrete scroll steps (wheel workspace nav and trackpad focus stepping)", 200, SIntValueOptions{.min = 0}));

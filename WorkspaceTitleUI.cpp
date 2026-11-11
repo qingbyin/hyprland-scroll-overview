@@ -6,6 +6,7 @@
 #include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/render/Texture.hpp>
@@ -31,9 +32,13 @@ extern "C" {
 namespace {
 CWorkspaceTitleUI* g_editor = nullptr;
 std::unique_ptr<WorkspaceTitles::Store> g_store;
+std::unique_ptr<WorkspaceTitleIME::Client> g_ime;
+SP<CEventLoopTimer> g_imeTimer;
+uint64_t g_inputGeneration = 0;
 template <typename Device> struct SConsumedInput {
     WP<Device> device;
     uint32_t code;
+    uint64_t generation = 0;
 };
 std::vector<SConsumedInput<IKeyboard>> g_keys;
 std::vector<SConsumedInput<IPointer>> g_buttons;
@@ -126,14 +131,30 @@ void WorkspaceTitleInput::init() {
     if (!g_store->load(error))
         notifyError(error);
 
+    g_ime = std::make_unique<WorkspaceTitleIME::Client>(
+        [](const std::string& text) { if (g_editor) g_editor->commitText(text); },
+        [](const WorkspaceTitleIME::Key& key) { if (g_editor) g_editor->unhandledKey(key); },
+        [](const WorkspaceTitleIME::Panel& panel) { if (g_editor) g_editor->updateInputPanel(panel); });
+    g_imeTimer = makeShared<CEventLoopTimer>(std::nullopt, [](SP<CEventLoopTimer> timer, void*) {
+        if (g_editor && g_ime)
+            g_ime->poll();
+        timer->updateTimeout(g_editor ? std::optional<Time::steady_dur>{std::chrono::milliseconds(8)} : std::nullopt);
+    }, nullptr);
+    g_pEventLoopManager->addTimer(g_imeTimer);
+
     // Register before any overview's default/submap listeners. Always retain
     // release tracking until physical release, including after cancel/close.
     g_keyHook = Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent event, Event::SCallbackInfo& info) {
         const auto device = OverviewSearchInput::keyboard();
         if (event.state == WL_KEYBOARD_KEY_STATE_RELEASED) {
-            if (captured(g_keys, device, event.keycode, true))
+            const bool current = std::ranges::any_of(g_keys, [&](const auto& input) {
+                return input.device.lock() == device && input.code == event.keycode && input.generation == g_inputGeneration;
+            });
+            if (captured(g_keys, device, event.keycode, true)) {
                 info.cancelled = true;
-            else if (!info.cancelled && g_editor && !OverviewSearchInput::passingHistoricalRelease())
+                if (current && g_editor)
+                    g_editor->key(event.keycode, true, event.timeMs);
+            } else if (!info.cancelled && g_editor && !OverviewSearchInput::passingHistoricalRelease())
                 OverviewSearchInput::suppressHistoricalReleaseBinds();
             return;
         }
@@ -143,9 +164,13 @@ void WorkspaceTitleInput::init() {
             info.cancelled = true;
             if (OverviewSearchInput::hasPressRecord())
                 return;
+            if (std::ranges::any_of(g_keys, [&](const auto& input) {
+                    return input.device.lock() == device && input.code == event.keycode && input.generation != g_inputGeneration;
+                }))
+                return;
             if (!captured(g_keys, device, event.keycode))
-                g_keys.push_back({device, event.keycode});
-            g_editor->key(event.keycode);
+                g_keys.push_back({device, event.keycode, g_inputGeneration});
+            g_editor->key(event.keycode, false, event.timeMs);
         } else if (captured(g_keys, device, event.keycode))
             info.cancelled = true;
     });
@@ -180,6 +205,11 @@ void WorkspaceTitleInput::init() {
 void WorkspaceTitleInput::shutdown() {
     if (g_editor)
         g_editor->cancel();
+    if (g_imeTimer) {
+        g_pEventLoopManager->removeTimer(g_imeTimer);
+        g_imeTimer.reset();
+    }
+    g_ime.reset();
     g_keyHook.reset();
     g_buttonHook.reset();
     g_axisHook.reset();
@@ -202,8 +232,17 @@ bool CWorkspaceTitleUI::editing() const { return g_editor == this; }
 
 void CWorkspaceTitleUI::cancel() {
     const bool wasEditing = editing();
-    if (wasEditing)
+    if (wasEditing) {
         g_editor = nullptr;
+        if (g_ime)
+            g_ime->end();
+        if (g_imeTimer)
+            g_imeTimer->updateTimeout(std::nullopt);
+    }
+    m_inputPanel = {};
+    m_panelTextures.clear();
+    m_panelBox = {};
+    m_candidateBoxes.clear();
     m_selector.clear();
     m_editor.reset("");
     m_saveFailed = false;
@@ -236,15 +275,12 @@ void CWorkspaceTitleUI::begin(size_t index) {
     if (g_editor)
         g_editor->cancel();
     m_selector = Workspace::selector(*workspace);
-    auto title = g_store->get(m_selector);
-    if (title.empty())
-        title = workspace->displayName();
-    // Native names need not obey our single-line editor rules.
-    if (!WorkspaceTitles::validTitle(title))
-        title.clear();
-    m_editor.reset(std::move(title));
+    m_editor.reset(g_store->get(m_selector));
     m_saveFailed = false;
     g_editor = this;
+    ++g_inputGeneration;
+    g_ime->begin();
+    g_imeTimer->updateTimeout(std::chrono::milliseconds(8));
     m_overview.requestInputFrame();
     m_overview.damage();
 }
@@ -258,6 +294,17 @@ bool CWorkspaceTitleUI::mouseButton(uint32_t button, bool pressed) {
         return false;
     const auto point = (g_pInputManager->getMouseCoordsInternal() - monitor->m_position) * monitor->m_scale;
     const uint32_t primary = ScrollOverview::Config::getLeftHanded(monitor) ? BTN_RIGHT : BTN_LEFT;
+    if (editing() && m_panelBox.containsPoint(point)) {
+        if (button == primary) {
+            for (const auto& [box, index] : m_candidateBoxes) {
+                if (box.containsPoint(point)) {
+                    g_ime->select(index);
+                    break;
+                }
+            }
+        }
+        return true;
+    }
     // Reverse paint order for overlapping cards during workspace animations.
     for (size_t i = m_overview.images.size(); i-- > 0;) {
         if (m_overview.workspaceOverviewAlpha(i) < 0.05F)
@@ -291,14 +338,59 @@ void CWorkspaceTitleUI::save() {
     damageOverviews();
 }
 
-void CWorkspaceTitleUI::key(uint32_t keycode) {
+void CWorkspaceTitleUI::key(uint32_t keycode, bool release, uint32_t time) {
     const auto keyboard = OverviewSearchInput::keyboard();
     if (!keyboard || !keyboard->m_xkbState)
         return;
-    auto* state = keyboard->m_xkbState; // actual layout/modifiers, NOT bind-symbol state
-    const auto code = keycode + 8;
-    const auto sym = xkb_state_key_get_one_sym(state, code);
-    switch (sym) {
+    auto* state = keyboard->m_xkbState;
+    WorkspaceTitleIME::Key key;
+    key.code = keycode + 8;
+    key.sym = xkb_state_key_get_one_sym(state, key.code);
+    key.time = time;
+    key.release = release;
+    // Fcitx uses X11 modifier bits, not arbitrary XKB keymap indices.
+    const std::pair<const char*, uint32_t> modifiers[] = {
+        {XKB_MOD_NAME_SHIFT, 1U << 0}, {XKB_MOD_NAME_CAPS, 1U << 1},
+        {XKB_MOD_NAME_CTRL, 1U << 2}, {XKB_MOD_NAME_ALT, 1U << 3},
+        {XKB_MOD_NAME_NUM, 1U << 4}, {XKB_MOD_NAME_LOGO, 1U << 6},
+        {"Mod5", 1U << 7},
+    };
+    for (const auto& [name, mask] : modifiers)
+        if (xkb_state_mod_name_is_active(state, name, XKB_STATE_MODS_EFFECTIVE) > 0)
+            key.modifiers |= mask;
+    // Capture fallback text now: modifiers may change before the async reply.
+    if (!release && !(key.modifiers & ((1U << 2) | (1U << 3) | (1U << 6)))) {
+        const int size = xkb_state_key_get_utf8(state, key.code, nullptr, 0);
+        if (size > 0 && size <= 4096) {
+            key.text.resize(size + 1);
+            xkb_state_key_get_utf8(state, key.code, key.text.data(), key.text.size());
+            key.text.resize(size);
+        }
+    }
+    g_ime->key(std::move(key));
+}
+
+void CWorkspaceTitleUI::commitText(const std::string& text) {
+    if (editing() && m_editor.insert(text)) {
+        m_saveFailed = false;
+        m_overview.requestInputFrame();
+        m_overview.damage();
+    }
+}
+
+void CWorkspaceTitleUI::updateInputPanel(const WorkspaceTitleIME::Panel& panel) {
+    m_inputPanel = panel;
+    m_panelTextures.clear();
+    m_panelBox = {};
+    m_candidateBoxes.clear();
+    m_overview.requestInputFrame();
+    m_overview.damage();
+}
+
+void CWorkspaceTitleUI::unhandledKey(const WorkspaceTitleIME::Key& key) {
+    if (!editing() || key.release)
+        return;
+    switch (key.sym) {
         case XKB_KEY_Escape: cancel(); return;
         case XKB_KEY_Return:
         case XKB_KEY_KP_Enter: save(); return;
@@ -313,21 +405,7 @@ void CWorkspaceTitleUI::key(uint32_t keycode) {
         case XKB_KEY_KP_Home: m_editor.home(); break;
         case XKB_KEY_End:
         case XKB_KEY_KP_End: m_editor.end(); break;
-        default: {
-            // Suppress shortcuts; allow Shift and AltGr as text modifiers.
-            if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0 ||
-                xkb_state_mod_name_is_active(state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0 ||
-                xkb_state_mod_name_is_active(state, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0)
-                break;
-            const int size = xkb_state_key_get_utf8(state, code, nullptr, 0);
-            if (size <= 0 || size > 4096)
-                break;
-            std::string text(size + 1, '\0');
-            xkb_state_key_get_utf8(state, code, text.data(), text.size());
-            text.resize(size);
-            m_editor.insert(text);
-            break;
-        }
+        default: m_editor.insert(key.text); break;
     }
     m_overview.requestInputFrame();
     m_overview.damage();
@@ -361,9 +439,12 @@ void CWorkspaceTitleUI::render() {
             continue;
         const float alpha = m_overview.workspaceOverviewAlpha(i);
         const bool active = editing() && selector == m_selector;
-        const auto color = active ? (m_saveFailed ? CHyprColor{0.55F, 0.08F, 0.05F, 0.98F * alpha} : CHyprColor{0.08F, 0.24F, 0.36F, 0.98F * alpha})
-                                  : CHyprColor{0.06F, 0.07F, 0.09F, 0.94F * alpha};
-        pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{.box = bar, .color = color}));
+        if (active) {
+            const auto color = m_saveFailed ? CHyprColor{0.85F, 0.20F, 0.15F, alpha} : CHyprColor{0.30F, 0.65F, 0.90F, alpha};
+            const double thickness = std::min(bar.height, std::max(1.0, static_cast<double>(monitor->m_scale)));
+            pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
+                .box = CBox{bar.x, bar.y + bar.height - thickness, bar.width, thickness}, .color = color}));
+        }
         const int padding = std::max(1, static_cast<int>(6 * monitor->m_scale));
         const int width = static_cast<int>(bar.width) - 2 * padding;
         const double dpi = pango_cairo_font_map_get_resolution(PANGO_CAIRO_FONT_MAP(pango_cairo_font_map_get_default()));
@@ -371,15 +452,62 @@ void CWorkspaceTitleUI::render() {
         const int fontSize = std::max(1, static_cast<int>(std::min(static_cast<double>(configuredSize) * monitor->m_scale, bar.height * 0.60) * pixelsToPoints));
         if (width <= fontSize * 2)
             continue;
+        const auto nativeName = workspace->displayName();
         auto text = active ? m_editor.text : g_store->get(selector);
-        if (!active && text.empty())
-            text = workspace->displayName();
-        // The cache signature precedes expensive Pango/text rasterization.
-        const auto signature = std::format("{}:{}:{}:{}:{}:{}:{}", width, fontSize, font.size(), font, active, active ? m_editor.cursor : 0, text);
+        // Length-delimit the native name so custom titles cannot collide with it.
+        // Check the cache before either prefix measurement or rasterization.
+        const auto signature = std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}", width, fontSize, font.size(), font, active,
+                                           active ? m_editor.cursor : 0, nativeName.size(), nativeName, text);
         auto& cached = m_textures[selector];
         if (signature != cached.signature || !cached.texture) {
-            if (active)
-                text = editorDisplay(m_editor, width, fontSize, font);
+            if (active) {
+                auto prefix = nativeName + "    ";
+                // Leave most of the title bar to the editable text, even when
+                // the native workspace name alone would fill the entire bar.
+                auto* pangoContext = pango_font_map_create_context(pango_cairo_font_map_get_default());
+                auto* layout = pango_layout_new(pangoContext);
+                auto* desc = pango_font_description_from_string(font.c_str());
+                pango_font_description_set_size(desc, fontSize * PANGO_SCALE);
+                pango_layout_set_font_description(layout, desc);
+                pango_layout_set_text(layout, prefix.c_str(), prefix.size());
+                int prefixWidth = 0;
+                pango_layout_get_pixel_size(layout, &prefixWidth, nullptr);
+                const int prefixBudget = static_cast<int>(width * 0.4);
+                if (prefixWidth > prefixBudget) {
+                    const auto measure = [&](const std::string& candidate) {
+                        pango_layout_set_text(layout, candidate.c_str(), candidate.size());
+                        int pixels = 0;
+                        pango_layout_get_pixel_size(layout, &pixels, nullptr);
+                        return pixels;
+                    };
+                    // Search UTF-8 boundaries, never split a multibyte character.
+                    std::vector<size_t> boundaries{0};
+                    for (size_t end = 1; end <= nativeName.size(); ++end) {
+                        if (end == nativeName.size() || (static_cast<unsigned char>(nativeName[end]) & 0xC0) != 0x80)
+                            boundaries.push_back(end);
+                    }
+                    prefix = "…    ";
+                    if (measure(prefix) <= prefixBudget) {
+                        size_t low = 0, high = boundaries.size() - 1;
+                        while (low < high) {
+                            const auto middle = (low + high + 1) / 2;
+                            const auto candidate = nativeName.substr(0, boundaries[middle]) + "…    ";
+                            if (measure(candidate) <= prefixBudget)
+                                low = middle;
+                            else
+                                high = middle - 1;
+                        }
+                        prefix = nativeName.substr(0, boundaries[low]) + "…    ";
+                    } else
+                        prefix = "    "; // Tiny bars retain the separator, not the name.
+                    prefixWidth = measure(prefix);
+                }
+                pango_font_description_free(desc);
+                g_object_unref(layout);
+                g_object_unref(pangoContext);
+                text = prefix + editorDisplay(m_editor, std::max(1, width - prefixWidth), fontSize, font);
+            } else
+                text = text.empty() ? nativeName : nativeName + "    " + text;
             Hyprgraphics::CTextResource::STextResourceData data;
             data.text = text;
             data.font = font;
@@ -394,7 +522,7 @@ void CWorkspaceTitleUI::render() {
             const auto size = cached.texture->m_size;
             pass.add(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{
                 .tex = cached.texture,
-                .box = CBox{bar.x + padding, bar.y + (bar.height - size.y) / 2, size.x, size.y},
+                .box = CBox{bar.x + (bar.width - size.x) / 2, bar.y + (bar.height - size.y) / 2, size.x, size.y},
                 .a = alpha,
                 .clipBox = bar,
             }));
@@ -402,5 +530,105 @@ void CWorkspaceTitleUI::render() {
     }
     std::erase_if(m_textures, [&live](const auto& entry) { return !live.contains(entry.first); });
     // Finish before top/overlay layers are submitted, matching preview order.
+    renderInputPanel();
     OverviewRender::flushPass(context, monitor);
+}
+
+void CWorkspaceTitleUI::renderInputPanel() {
+    m_panelBox = {};
+    m_candidateBoxes.clear();
+    const auto monitor = m_overview.pMonitor.lock();
+    if (!editing() || !monitor)
+        return;
+    const auto image = std::ranges::find_if(m_overview.images, [this](const auto& item) {
+        return item && item->pWorkspace && Workspace::selector(*item->pWorkspace) == m_selector;
+    });
+    if (image == m_overview.images.end())
+        return;
+    const auto index = std::distance(m_overview.images.begin(), image);
+    const auto bar = titleBox(index);
+    const CBox screen{0, 0, monitor->m_transformedSize.x, monitor->m_transformedSize.y};
+    if (bar.width <= 0 || bar.height <= 0 || !bar.overlaps(screen))
+        return;
+
+    // This compositor-owned editor has no client wl_surface. Fcitx's
+    // ClientSideInputPanel API supplies composition and candidates instead
+    // of trying to attach a native Wayland popup to another application's surface.
+    std::vector<std::pair<std::string, int>> rows;
+    if (!m_inputPanel.preedit.empty()) {
+        auto preedit = m_inputPanel.preedit;
+        const auto cursor = m_inputPanel.cursor;
+        if (cursor >= 0 && static_cast<size_t>(cursor) <= preedit.size() &&
+            (static_cast<size_t>(cursor) == preedit.size() || (static_cast<unsigned char>(preedit[cursor]) & 0xC0) != 0x80))
+            preedit.insert(cursor, "│");
+        rows.emplace_back(std::move(preedit), -1);
+    }
+    if (!m_inputPanel.auxiliary.empty())
+        rows.emplace_back(m_inputPanel.auxiliary, -1);
+    for (size_t i = 0; i < m_inputPanel.candidates.size(); ++i) {
+        const auto& candidate = m_inputPanel.candidates[i];
+        rows.emplace_back(candidate.label + "  " + candidate.text, i);
+    }
+    if (m_inputPanel.hasPrevious || m_inputPanel.hasNext)
+        rows.emplace_back(std::string(m_inputPanel.hasPrevious ? "‹  " : "") + (m_inputPanel.hasNext ? "›" : ""), -1);
+    if (rows.empty())
+        return;
+
+    const double scale = monitor->m_scale;
+    const double padding = 10 * scale;
+    const int logicalFont = std::clamp(ScrollOverview::Config::getValue<int>("plugin:scrolloverview:titles:font_size", monitor), 6, 64);
+    const double rowHeight = (logicalFont + 12) * scale;
+    const size_t maxRows = static_cast<size_t>(std::max(0.0, std::floor((screen.height - 2 * padding) / rowHeight)));
+    rows.resize(std::min(rows.size(), maxRows));
+    if (rows.empty())
+        return;
+    const double width = std::min(560 * scale, screen.width);
+    const double height = rows.size() * rowHeight + 2 * padding;
+    const double x = std::clamp(bar.x + (bar.width - width) / 2, 0.0, screen.width - width);
+    double y = bar.y + bar.height + 4 * scale;
+    if (y + height > screen.height)
+        y = bar.y - height - 4 * scale;
+    y = std::clamp(y, 0.0, screen.height - height);
+    m_panelBox = CBox{x, y, width, height};
+    const float alpha = m_overview.workspaceOverviewAlpha(index);
+    auto& pass = Render::IHyprRenderer::currentPass(g_pHyprRenderer->context());
+    pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
+        .box = m_panelBox, .color = CHyprColor{0.10F, 0.13F, 0.18F, 0.98F * alpha}}));
+    const auto font = ScrollOverview::Config::getValue<std::string>("plugin:scrolloverview:titles:font", monitor);
+    const double dpi = pango_cairo_font_map_get_resolution(PANGO_CAIRO_FONT_MAP(pango_cairo_font_map_get_default()));
+    const int fontSize = std::max(1, static_cast<int>(logicalFont * scale * 72.0 / (dpi > 0 ? dpi : 96.0)));
+    const double textWidth = width - 2 * padding;
+    if (textWidth <= 0)
+        return;
+    m_panelTextures.resize(rows.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const auto& [text, candidate] = rows[i];
+        const CBox row{x + padding, y + padding + i * rowHeight, textWidth, rowHeight};
+        if (candidate >= 0) {
+            m_candidateBoxes.emplace_back(row, candidate);
+            if (candidate == m_inputPanel.selected)
+                pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
+                    .box = row, .color = CHyprColor{0.18F, 0.37F, 0.55F, alpha}}));
+        }
+        auto& cached = m_panelTextures[i];
+        const auto signature = std::format("{}:{}:{}:{}:{}", textWidth, fontSize, font.size(), font, text);
+        if (!cached.texture || cached.signature != signature) {
+            Hyprgraphics::CTextResource::STextResourceData data;
+            data.text = text;
+            data.font = font;
+            data.fontSize = fontSize;
+            data.maxSize = Vector2D{textWidth, rowHeight};
+            data.wrap = false;
+            data.ellipsize = true;
+            cached.texture = g_pHyprRenderer->renderText(std::move(data));
+            cached.signature = signature;
+        }
+        if (cached.texture) {
+            const auto size = cached.texture->m_size;
+            pass.add(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{
+                .tex = cached.texture,
+                .box = CBox{row.x, row.y + (row.height - size.y) / 2, size.x, size.y},
+                .a = alpha, .clipBox = row}));
+        }
+    }
 }

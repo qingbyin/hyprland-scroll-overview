@@ -1,4 +1,4 @@
-// Offline integration regression for the actual title render/titleBox methods.
+// Offline integration regression for actual title/panel render and cancellation.
 // Run: bash scripts/test-workspace-title-render.sh [extra compiler flags]
 // The script extracts unchanged production definitions plus the real flushPass.
 // No copied render algorithm, Hyprland header tree, GL context or compositor.
@@ -10,6 +10,8 @@
 #include <format>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include "../WorkspaceTitleIME.hpp"
 #include <ranges>
 #include <stdexcept>
 #include <string>
@@ -63,7 +65,7 @@ struct CHyprColor { float r = 0, g = 0, b = 0, a = 1; };
 
 struct Settings {
     bool enabled = true;
-    int height = 30, fontSize = 14;
+    int height = 40, fontSize = 22;
     std::string font = "sans-serif";
 };
 struct Monitor {
@@ -72,6 +74,10 @@ struct Monitor {
     Settings settings;
 };
 using PHLMONITOR = SP<Monitor>;
+struct MonitorRef : std::weak_ptr<Monitor> {
+    using std::weak_ptr<Monitor>::operator=;
+    explicit operator bool() const { return !expired(); }
+};
 namespace ScrollOverview::Config {
     template <typename T> T getValue(const std::string& key, PHLMONITOR monitor) {
         const auto& s = monitor->settings;
@@ -99,7 +105,9 @@ namespace Workspace {
 }
 struct Image { SP<Workspace::Item> pWorkspace; };
 struct CScrollOverview {
-    std::weak_ptr<Monitor> pMonitor;
+    MonitorRef pMonitor;
+    int damages = 0;
+    void damage() { ++damages; }
     bool closing = false;
     std::vector<SP<Image>> images;
     std::vector<CBox> previews;
@@ -115,17 +123,49 @@ namespace WorkspaceTitles {
             return it == values.end() ? std::string{} : it->second;
         }
     };
-    struct Editor { std::string text; size_t cursor = 0; };
+    struct Editor {
+        std::string text;
+        size_t cursor = 0;
+        void reset(std::string value) { text = std::move(value); cursor = text.size(); }
+    };
 }
 std::unique_ptr<WorkspaceTitles::Store> g_store;
 // Editor display and Pango are external dependencies, not extracted methods.
-std::string editorDisplay(const WorkspaceTitles::Editor& editor, int, int, const std::string&) {
+int editorWidth = 0, prefixMeasurements = 0;
+std::string editorDisplay(const WorkspaceTitles::Editor& editor, int width, int, const std::string&) {
+    editorWidth = width;
     return editor.text.substr(0, editor.cursor) + "|" + editor.text.substr(editor.cursor);
 }
 double fakeDpi = 96;
 void* pango_cairo_font_map_get_default() { return nullptr; }
 void* PANGO_CAIRO_FONT_MAP(void* map) { return map; }
 double pango_cairo_font_map_get_resolution(void*) { return fakeDpi; }
+// Deterministic proportional advances verify the render method reserves the
+// measured prefix, not a byte-count estimate. These do not test Pango shaping.
+constexpr int PANGO_SCALE = 1024;
+struct FakePangoContext {};
+struct FakeFont { std::string family; int size = 0; };
+struct FakeLayout { std::string text; FakeFont font; };
+FakePangoContext* pango_font_map_create_context(void*) { return new FakePangoContext; }
+FakeLayout* pango_layout_new(FakePangoContext*) { return new FakeLayout; }
+FakeFont* pango_font_description_from_string(const char* font) { return new FakeFont{font}; }
+void pango_font_description_set_size(FakeFont* font, int size) { font->size = size; }
+void pango_layout_set_font_description(FakeLayout* layout, FakeFont* font) { layout->font = *font; }
+void pango_layout_set_text(FakeLayout* layout, const char* text, size_t size) { layout->text.assign(text, size); }
+int measuredWidth(const std::string& text, int fontSize) {
+    double width = 0;
+    for (const unsigned char c : text) {
+        if ((c & 0xC0) != 0x80)
+            width += c == ' ' ? 0.25 : c == 'W' ? 1 : 0.5;
+    }
+    return static_cast<int>(std::ceil(width * fontSize * (fakeDpi > 0 ? fakeDpi : 96) / 72));
+}
+void pango_layout_get_pixel_size(FakeLayout* layout, int* width, int*) {
+    ++prefixMeasurements;
+    *width = measuredWidth(layout->text, layout->font.size / PANGO_SCALE);
+}
+void pango_font_description_free(FakeFont* font) { delete font; }
+template <typename T> void g_object_unref(T* object) { delete object; }
 
 namespace Hyprgraphics {
     struct CTextResource {
@@ -244,20 +284,36 @@ struct FakeRenderer {
     }
 };
 FakeRenderer* g_pHyprRenderer = nullptr;
+class CWorkspaceTitleUI;
+CWorkspaceTitleUI* g_editor = nullptr;
+struct FakeIME {
+    int ends = 0;
+    void end() { ++ends; }
+};
+struct FakeTimer {
+    int stops = 0;
+    void updateTimeout(std::nullopt_t) { ++stops; }
+};
+std::unique_ptr<FakeIME> g_ime;
+std::unique_ptr<FakeTimer> g_imeTimer;
 class CWorkspaceTitleUI {
   public:
     explicit CWorkspaceTitleUI(CScrollOverview& overview) : m_overview(overview) {}
     CBox titleBox(size_t index) const;
     void render();
-    bool editing() const { return isEditing; }
-    void cancel() { isEditing = false; ++cancelled; m_selector.clear(); m_editor = {}; m_saveFailed = false; }
+    void renderInputPanel();
+    bool editing() const;
+    void cancel();
     struct STexture { std::string signature; SP<Render::ITexture> texture; };
     CScrollOverview& m_overview;
     std::string m_selector;
     WorkspaceTitles::Editor m_editor;
-    bool m_saveFailed = false, isEditing = false;
-    int cancelled = 0;
+    bool m_saveFailed = false;
     std::unordered_map<std::string, STexture> m_textures;
+    WorkspaceTitleIME::Panel m_inputPanel;
+    std::vector<STexture> m_panelTextures;
+    CBox m_panelBox;
+    std::vector<std::pair<CBox, int>> m_candidateBoxes;
 };
 
 #include "workspace-title-render-methods.inc"
@@ -269,13 +325,17 @@ struct Fixture {
     CWorkspaceTitleUI ui{overview};
     Fixture() {
         trace = {};
+        g_editor = nullptr;
+        g_ime = std::make_unique<FakeIME>();
+        g_imeTimer = std::make_unique<FakeTimer>();
         fakeDpi = 96;
+        editorWidth = prefixMeasurements = 0;
         overview.pMonitor = monitor;
         g_store = std::make_unique<WorkspaceTitles::Store>();
         g_pHyprRenderer = &renderer;
         add("1", "1", {100, 100, 300, 200});
     }
-    ~Fixture() { g_pHyprRenderer = nullptr; g_store.reset(); }
+    ~Fixture() { g_editor = nullptr; g_ime.reset(); g_imeTimer.reset(); g_pHyprRenderer = nullptr; g_store.reset(); }
     void add(std::string key, std::string name, CBox box, float alpha = 1) {
         overview.images.push_back(std::make_shared<Image>(Image{
             std::make_shared<Workspace::Item>(Workspace::Item{std::move(key), std::move(name)})}));
@@ -306,7 +366,7 @@ void defaultsAndOrdering() {
         .box = {0, 0, 800, 600}, .color = {1, 0, 0, 1}}));
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{
-        "rect", "rect", "text:1", "rect", "text:Development"}));
+        "rect", "text:1", "text:Development"}));
     CHECK(trace.flushes == 1 && trace.clears == 1);
     CHECK(sameBox(trace.damage.front().box, {0, 0, 800, 600}));
     CHECK(trace.events.at(trace.events.size() - 2) == "flush");
@@ -315,24 +375,26 @@ void defaultsAndOrdering() {
     CHECK(trace.raster[0].text == "1" && trace.raster[1].text == "Development");
     CHECK(trace.raster[0].font == "sans-serif");
     CHECK(!trace.raster[0].wrap && trace.raster[0].ellipsize);
-    CHECK(sameBox(f.ui.titleBox(0), {100, 100, 300, 30}));
-    CHECK(topAt(107, 115) == "text:1");
-    CHECK(topAt(107, 365) == "text:Development");
+    CHECK(sameBox(f.ui.titleBox(0), {100, 100, 300, 40}));
+    CHECK(trace.rectangles.size() == 1); // Only the queued preview, no title fill.
+    CHECK(trace.raster[0].fontSize == 16); // 22 logical px converted to integer points.
+    CHECK(topAt(250, 120) == "text:1");
+    CHECK(topAt(250, 370) == "text:Development");
     CHECK(topAt(390, 110) == "rect");
     // Top/overlay surfaces are submitted after titles by the caller.
     f.renderer.ctx.pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
-        .box = {100, 100, 20, 30}, .color = {0, 1, 0, 1}}));
+        .box = {240, 100, 20, 40}, .color = {0, 1, 0, 1}}));
     OverviewRender::flushPass(f.renderer.ctx, f.monitor);
-    CHECK(topAt(107, 115) == "rect");
-    CHECK(topAt(107, 365) == "text:Development");
+    CHECK(topAt(250, 120) == "rect");
+    CHECK(topAt(250, 370) == "text:Development");
 }
 void guardsAndCancellation() {
     Fixture f;
     f.monitor->settings.enabled = false;
-    f.ui.isEditing = true;
+    g_editor = &f.ui;
     f.ui.m_selector = "1";
     f.render();
-    CHECK(f.ui.cancelled == 1 && !f.ui.editing());
+    CHECK(f.overview.damages == 1 && !f.ui.editing());
     CHECK(f.ui.titleBox(0).empty());
     CHECK(trace.submitted.empty() && trace.raster.empty() && trace.flushes == 0);
     f.monitor->settings.enabled = true;
@@ -348,10 +410,10 @@ void guardsAndCancellation() {
     f.render();
     CHECK(trace.submitted.empty());
     g_store = std::make_unique<WorkspaceTitles::Store>();
-    f.ui.isEditing = true;
+    g_editor = &f.ui;
     f.ui.m_selector = "removed";
     f.render();
-    CHECK(f.ui.cancelled == 2 && !f.ui.editing());
+    CHECK(f.overview.damages == 2 && !f.ui.editing());
     CHECK(trace.raster.front().text == "1");
 }
 void cacheAndInvalidation() {
@@ -360,13 +422,13 @@ void cacheAndInvalidation() {
     const auto first = f.ui.m_textures.at("1").texture;
     f.render();
     CHECK(trace.raster.size() == 1 && f.ui.m_textures.at("1").texture == first);
-    CHECK(trace.flushes == 2 && trace.submitted.size() == 4);
+    CHECK(trace.flushes == 2 && trace.submitted.size() == 2);
     f.overview.previews[0].x += 10;
     f.render();
     CHECK(trace.raster.size() == 1); // Translation alone does not rerasterize.
     g_store->values["1"] = "Custom";
     f.render();
-    CHECK(trace.raster.size() == 2 && trace.raster.back().text == "Custom");
+    CHECK(trace.raster.size() == 2 && trace.raster.back().text == "1    Custom");
     g_store->values.erase("1");
     f.overview.images[0]->pWorkspace->name = "Renamed";
     f.render();
@@ -389,21 +451,26 @@ void cacheAndInvalidation() {
 }
 void editingAndAlpha() {
     Fixture f;
-    f.ui.isEditing = true;
+    g_editor = &f.ui;
     f.ui.m_selector = "1";
     f.ui.m_editor = {"Draft", 2};
     f.overview.alphas[0] = 0.5F;
     f.render();
-    CHECK(trace.raster.back().text == "Dr|aft");
+    CHECK(trace.raster.back().text == "1    Dr|aft");
     CHECK(trace.textures.back().a == 0.5F);
-    CHECK(std::abs(trace.rectangles.back().color.a - 0.49F) < 0.0001F);
+    CHECK(trace.rectangles.back().color.a == 0.5F);
+    CHECK(sameBox(trace.rectangles.back().box, {100, 139, 300, 1}));
+    const auto size = trace.textures.back().tex->m_size;
+    CHECK(trace.textures.back().box.x == 100 + (300 - size.x) / 2);
+    CHECK(topAt(101, 101).empty());
     f.ui.m_editor.cursor = 3;
     f.render();
-    CHECK(trace.raster.size() == 2 && trace.raster.back().text == "Dra|ft");
+    CHECK(trace.raster.size() == 2 && trace.raster.back().text == "1    Dra|ft");
     f.ui.m_saveFailed = true;
     f.render();
     CHECK(trace.raster.size() == 2);
-    CHECK(trace.rectangles.back().color.r == 0.55F);
+    CHECK(trace.rectangles.back().color.r == 0.85F);
+    CHECK(sameBox(trace.rectangles.back().box, {100, 139, 300, 1}));
     f.overview.alphas[0] = 0;
     const auto painted = trace.painted.size();
     f.render();
@@ -420,12 +487,12 @@ void clippingAndOffscreen() {
     // Deliberately oversized raster output: clipBox must still constrain paint.
     trace.oversizedTexture = true;
     f.render();
-    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1"}));
-    CHECK(sameBox(trace.textures[0].clipBox, {-50, -10, 200, 30}));
-    CHECK(sameBox(trace.painted[0].box, {0, 0, 150, 20}));
-    CHECK(!trace.painted[1].box.empty());
+    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
+    CHECK(sameBox(trace.textures[0].clipBox, {-50, -10, 200, 40}));
+    CHECK(trace.rectangles.empty());
+    CHECK(!trace.painted[0].box.empty());
     for (const auto& p : trace.painted)
-        CHECK(sameBox(intersect(p.box, {0, 0, 150, 20}), p.box));
+        CHECK(sameBox(intersect(p.box, {0, 0, 150, 30}), p.box));
     const auto rasters = trace.raster.size();
     f.overview.previews[0].x = 900;
     f.render();
@@ -435,10 +502,14 @@ void clippingAndOffscreen() {
 void narrowAndSmallBars() {
     Fixture f;
     f.overview.previews[0] = {100, 100, 20, 100};
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{"rect"}));
     CHECK(trace.raster.empty() && trace.flushes == 1);
-    CHECK(topAt(105, 105) == "rect"); // Early text-skip must not skip the flush.
+    CHECK(sameBox(trace.rectangles.back().box, {100, 139, 20, 1}));
+    CHECK(topAt(105, 105).empty()); // No filled editor background.
+    CHECK(topAt(105, 139) == "rect"); // Early text-skip still flushes the underline.
     f.overview.previews[0] = {100, 100, 200, 8};
     f.render();
     CHECK(f.ui.titleBox(0).height == 8);
@@ -453,12 +524,13 @@ void scalingAndBounds() {
         f.overview.previews[0] = {100 * scale, 100 * scale, 300 * scale, 200 * scale};
         f.render();
         const auto bar = f.ui.titleBox(0);
-        CHECK(sameBox(bar, {100 * scale, 100 * scale, 300 * scale, 30 * scale}));
+        CHECK(sameBox(bar, {100 * scale, 100 * scale, 300 * scale, 40 * scale}));
         const int padding = std::max(1, static_cast<int>(6 * scale));
         CHECK(trace.raster.back().maxSize.x == 300 * scale - 2 * padding);
-        CHECK(trace.raster.back().fontSize == static_cast<int>(14 * scale * 0.75));
-        CHECK(trace.textures.back().box.x == bar.x + padding);
+        CHECK(trace.raster.back().fontSize == static_cast<int>(22 * scale * 0.75));
         const auto size = trace.textures.back().tex->m_size;
+        CHECK(trace.textures.back().box.x == bar.x + (bar.width - size.x) / 2);
+        CHECK(trace.rectangles.empty());
         CHECK(trace.textures.back().box.y == bar.y + (bar.height - size.y) / 2);
         CHECK(sameBox(trace.damage.back().box, {0, 0, 800 * scale, 600 * scale}));
     }
@@ -482,18 +554,390 @@ void overlappingCardsAndRetry() {
     g_store->values["1"] = "Numbered one";
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{
-        "rect", "text:Numbered one", "rect", "text:Named one"}));
-    CHECK(topAt(107, 115) == "text:Named one");
+        "text:1    Numbered one", "text:Named one"}));
+    CHECK(topAt(250, 120) == "text:Named one");
     CHECK(f.ui.m_textures.size() == 2); // Numeric and named selectors stay distinct.
     f.ui.m_textures.clear();
     trace.failRaster = true;
     f.render();
     CHECK(!f.ui.m_textures.at("1").texture);
-    CHECK(trace.flushes == 2); // Background survives a text rasterization failure.
+    CHECK(trace.flushes == 2); // The second title still paints after the first raster fails.
     const auto rasters = trace.raster.size();
     f.render();
     CHECK(f.ui.m_textures.at("1").texture);
     CHECK(trace.raster.size() == rasters + 1);
+}
+void nativePrefixAndEditorBudget() {
+    Fixture f;
+    g_store->values["1"] = "Custom";
+    f.render();
+    CHECK(trace.raster.back().text == "1    Custom");
+    CHECK(trace.rectangles.empty() && prefixMeasurements == 0);
+    const auto first = f.ui.m_textures.at("1").texture;
+    const auto size = first->m_size;
+    CHECK(trace.textures.back().box.x == 100 + (300 - size.x) / 2);
+    f.overview.images[0]->pWorkspace->name = "W";
+    f.render();
+    CHECK(trace.raster.size() == 2 && trace.raster.back().text == "W    Custom");
+    CHECK(f.ui.m_textures.at("1").texture != first);
+    CHECK(prefixMeasurements == 0); // No prefix measurement outside editing.
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_editor = {std::string(4096, 'x'), 4096};
+    f.render();
+    CHECK(trace.raster.back().text.starts_with("W    "));
+    CHECK(prefixMeasurements == 1);
+    CHECK(editorWidth == 288 - measuredWidth("W    ", trace.raster.back().fontSize));
+    CHECK(trace.raster.back().maxSize.x == 288); // Full texture remains bounded.
+    const auto rasters = trace.raster.size();
+    f.render();
+    CHECK(trace.raster.size() == rasters && prefixMeasurements == 1);
+    const int oldWidth = editorWidth;
+    f.overview.images[0]->pWorkspace->name = "WW";
+    f.render();
+    CHECK(trace.raster.size() == rasters + 1 && prefixMeasurements == 2);
+    CHECK(editorWidth < oldWidth);
+    CHECK(editorWidth == 288 - measuredWidth("WW    ", trace.raster.back().fontSize));
+    f.ui.m_editor = {"", 0};
+    f.render();
+    CHECK(trace.raster.back().text == "WW    |");
+    g_editor = nullptr;
+    g_store->values.erase("1");
+    f.render();
+    CHECK(trace.raster.back().text == "WW"); // No trailing spaces or duplicate name.
+    for (const double scale : {1.25, 2.0}) {
+        f.monitor->m_scale = scale;
+        f.overview.previews[0] = {100, 100, 300 * scale, 200 * scale};
+        g_editor = &f.ui;
+        f.render();
+        CHECK(editorWidth == trace.raster.back().maxSize.x -
+            measuredWidth("WW    ", trace.raster.back().fontSize));
+        const auto bar = f.ui.titleBox(0);
+        CHECK(sameBox(trace.rectangles.back().box,
+            {bar.x, bar.y + bar.height - scale, bar.width, scale}));
+    }
+}
+void longNativePrefix() {
+    std::string unicodeName;
+    for (int i = 0; i < 1000; ++i)
+        unicodeName += "工";
+    for (const auto& nativeName : {std::string(4096, 'W'), unicodeName}) {
+        for (const double scale : {1.0, 1.25, 2.0}) {
+            for (const double dpi : {96.0, 144.0}) {
+                Fixture f;
+                fakeDpi = dpi;
+                f.monitor->m_scale = scale;
+                f.overview.previews[0] = {100, 100, 300 * scale, 200 * scale};
+                f.overview.images[0]->pWorkspace->name = nativeName;
+                g_editor = &f.ui;
+                f.ui.m_selector = "1";
+                f.render(); // Empty editor still has a visible insertion cursor.
+                const auto& data = trace.raster.back();
+                CHECK(data.text.ends_with("…    |"));
+                const auto prefix = data.text.substr(0, data.text.size() - 1);
+                const auto visibleName = prefix.substr(0, prefix.size() - std::string("…    ").size());
+                CHECK(nativeName.starts_with(visibleName));
+                if (nativeName == unicodeName)
+                    CHECK(visibleName.size() % std::string("工").size() == 0);
+                const int width = static_cast<int>(data.maxSize.x);
+                const int prefixWidth = measuredWidth(prefix, data.fontSize);
+                CHECK(prefixWidth <= static_cast<int>(width * 0.4));
+                CHECK(editorWidth == width - prefixWidth);
+                CHECK(editorWidth >= width * 0.6);
+                CHECK(measuredWidth(data.text, data.fontSize) <= width);
+                CHECK(prefixMeasurements < 20); // Binary search, not one measurement per byte.
+                const auto measurements = prefixMeasurements;
+                const auto rasterCount = trace.raster.size();
+                f.render();
+                CHECK(prefixMeasurements == measurements && trace.raster.size() == rasterCount);
+                f.ui.m_editor = {std::string(4096, 'x'), 4096};
+                f.render();
+                CHECK(trace.raster.back().text.starts_with(prefix));
+                CHECK(editorWidth == width - prefixWidth);
+                CHECK(trace.raster.back().maxSize.x == width);
+                f.overview.images[0]->pWorkspace->name += "W";
+                f.render();
+                CHECK(trace.raster.size() == rasterCount + 2); // Even an elided suffix invalidates.
+            }
+        }
+    }
+    Fixture f;
+    f.overview.previews[0].width = 50;
+    f.overview.images[0]->pWorkspace->name = std::string(100, 'W');
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.render();
+    CHECK(trace.raster.back().text == "    |"); // Too narrow even for an ellipsis.
+    CHECK(editorWidth > 0);
+    CHECK(measuredWidth(trace.raster.back().text, trace.raster.back().fontSize) <=
+        trace.raster.back().maxSize.x);
+}
+void emptyPanelAndGuards() {
+    Fixture f;
+    f.ui.m_panelBox = {1, 2, 3, 4};
+    f.ui.m_candidateBoxes.push_back({{1, 2, 3, 4}, 0});
+    f.ui.m_inputPanel.preedit = "拼音";
+    f.render(); // Inactive editors cannot show a stale composition panel.
+    CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
+    CHECK(trace.rectangles.empty());
+    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
+    trace = {};
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_inputPanel = {};
+    f.render();
+    CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
+    CHECK(f.ui.m_panelTextures.empty());
+    CHECK(trace.rectangles.size() == 1);
+    CHECK(sameBox(trace.rectangles[0].box, {100, 139, 300, 1}));
+    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1    |"}));
+    f.ui.m_inputPanel.preedit = "拼音";
+    f.render();
+    CHECK(!f.ui.m_panelBox.empty());
+    trace = {};
+    f.overview.previews[0].x = 900;
+    f.render();
+    CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
+    CHECK(trace.submitted.empty());
+    f.overview.previews[0].x = 100;
+    f.ui.m_selector = "missing";
+    f.ui.renderInputPanel(); // The helper itself rejects a missing workspace.
+    CHECK(f.ui.m_panelBox.empty() && trace.submitted.empty());
+    f.ui.m_selector = "1";
+    f.overview.pMonitor.reset();
+    f.ui.m_panelBox = {1, 2, 3, 4};
+    f.ui.renderInputPanel();
+    CHECK(f.ui.m_panelBox.empty() && trace.submitted.empty());
+}
+void panelCompositionCandidatesAndOrder() {
+    Fixture f;
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_inputPanel = {
+        .preedit = "拼音", .auxiliary = "中文输入", .cursor = 3, .selected = 1,
+        .candidates = {{"1", "拼音"}, {"2", "中文"}},
+        .hasPrevious = true, .hasNext = true,
+    };
+    f.render();
+    CHECK((trace.submitted == std::vector<std::string>{
+        "rect", "text:1    |", "rect", "text:拼│音", "text:中文输入",
+        "text:1  拼音", "rect", "text:2  中文", "text:‹  ›"}));
+    CHECK(trace.flushes == 1 && trace.clears == 1);
+    CHECK(trace.events[trace.events.size() - 2] == "flush");
+    CHECK(trace.events.back() == "clear");
+    CHECK(sameBox(f.ui.m_panelBox, {0, 144, 560, 190}));
+    CHECK(trace.rectangles.size() == 3); // Underline, popup, selected candidate.
+    CHECK(sameBox(trace.rectangles[1].box, f.ui.m_panelBox));
+    CHECK(trace.rectangles[1].color.a == 0.98F);
+    CHECK(f.ui.m_candidateBoxes.size() == 2);
+    for (size_t i = 0; i < f.ui.m_candidateBoxes.size(); ++i) {
+        const auto& [box, candidate] = f.ui.m_candidateBoxes[i];
+        CHECK(candidate == static_cast<int>(i));
+        CHECK(sameBox(box, {10, 222 + 34.0 * i, 540, 34}));
+        CHECK(sameBox(box, trace.textures[3 + i].clipBox));
+        CHECK(box.contains(box.x + box.width / 2, box.y + box.height / 2));
+        CHECK(!box.contains(box.x + box.width, box.y + box.height / 2));
+        CHECK(!box.contains(5, box.y + 1)); // Panel padding is not a candidate.
+        CHECK(!box.contains(20, 160)); // Composition row is not a candidate.
+        CHECK(!box.contains(20, 200)); // Auxiliary row is not a candidate.
+        CHECK(!box.contains(20, 300)); // Paging indicators are not candidates.
+    }
+    CHECK(sameBox(trace.rectangles[2].box, f.ui.m_candidateBoxes[1].first));
+    CHECK(trace.rectangles[2].color.r == 0.18F && trace.rectangles[2].color.b == 0.55F);
+    CHECK(topAt(20, 270) == "text:2  中文");
+    CHECK(topAt(101, 101).empty()); // Popup fill must not restore the titlebar fill.
+    for (size_t i = 1; i < trace.raster.size(); ++i) {
+        CHECK(trace.raster[i].maxSize.x == 540 && trace.raster[i].maxSize.y == 34);
+        CHECK(!trace.raster[i].wrap && trace.raster[i].ellipsize);
+        CHECK(trace.raster[i].font == "sans-serif" && trace.raster[i].fontSize == 16);
+    }
+}
+void panelCaretBoundaries() {
+    Fixture f;
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_inputPanel.preedit = "拼音";
+    const std::pair<int, const char*> cases[] = {
+        {0, "│拼音"}, {3, "拼│音"}, {6, "拼音│"},
+        {-1, "拼音"}, {1, "拼音"}, {4, "拼音"}, {7, "拼音"},
+    };
+    for (const auto& [cursor, expected] : cases) {
+        trace = {};
+        f.ui.m_inputPanel.cursor = cursor;
+        f.render();
+        CHECK(trace.textures.size() == 2);
+        CHECK(trace.textures.back().tex->text == expected);
+        CHECK(f.ui.m_candidateBoxes.empty());
+        CHECK(f.ui.m_panelTextures.size() == 1);
+    }
+    f.ui.m_inputPanel = {};
+    f.ui.m_inputPanel.hasNext = true;
+    trace = {};
+    f.render();
+    CHECK(trace.textures.back().tex->text == "›");
+    CHECK(f.ui.m_candidateBoxes.empty());
+}
+void panelScreenBoundsAndClipping() {
+    for (const double scale : {1.0, 1.25, 2.0}) {
+        Fixture f;
+        g_editor = &f.ui;
+        f.ui.m_selector = "1";
+        f.monitor->m_scale = scale;
+        // Noninteger scaled geometry, with a title crossing the right edge.
+        f.monitor->m_transformedSize = {803, 607};
+        f.overview.previews[0] = {750.25, 565.5, 200 * scale, 200 * scale};
+        f.ui.m_inputPanel = {
+            .preedit = "zhong", .auxiliary = "", .cursor = 5, .selected = 0,
+            .candidates = {{"1", "中文"}, {"2", "中国"}},
+        };
+        f.render();
+        const CBox screen{0, 0, 803, 607};
+        const auto panel = f.ui.m_panelBox;
+        const auto bar = f.ui.titleBox(0);
+        CHECK(sameBox(intersect(panel, screen), panel));
+        CHECK(panel.x + panel.width == screen.width);
+        CHECK(panel.width == std::min(560 * scale, screen.width));
+        CHECK(panel.y + panel.height <= bar.y - 4 * scale);
+        CHECK(f.ui.m_candidateBoxes.size() == 2);
+        for (const auto& [box, candidate] : f.ui.m_candidateBoxes) {
+            CHECK(candidate >= 0 && candidate < 2);
+            CHECK(sameBox(intersect(box, panel), box));
+            CHECK(box.height == 34 * scale);
+        }
+        // Force raster overflow and prove actual submission clips every row.
+        f.ui.m_panelTextures.clear();
+        trace = {};
+        trace.oversizedTexture = true;
+        f.render();
+        for (size_t i = 1; i < trace.textures.size(); ++i) {
+            const auto& texture = trace.textures[i];
+            CHECK(sameBox(intersect(texture.clipBox, panel), texture.clipBox));
+            CHECK(texture.box.height > texture.clipBox.height);
+            const auto painted = std::ranges::find_if(trace.painted, [&](const Paint& p) {
+                return p.label == "text:" + texture.tex->text;
+            });
+            CHECK(painted != trace.painted.end());
+            CHECK(sameBox(intersect(painted->box, texture.clipBox), painted->box));
+        }
+        trace = {};
+        f.ui.m_inputPanel = {};
+        for (int i = 0; i < 50; ++i)
+            f.ui.m_inputPanel.candidates.push_back({std::to_string(i + 1), "候选"});
+        f.render();
+        CHECK(sameBox(intersect(f.ui.m_panelBox, screen), f.ui.m_panelBox));
+        const auto maxRows = static_cast<size_t>(std::floor((607 - 20 * scale) / (34 * scale)));
+        CHECK(f.ui.m_panelTextures.size() == maxRows);
+        CHECK(f.ui.m_candidateBoxes.size() == maxRows);
+        for (size_t i = 0; i < maxRows; ++i) {
+            CHECK(f.ui.m_candidateBoxes[i].second == static_cast<int>(i));
+            CHECK(sameBox(intersect(f.ui.m_candidateBoxes[i].first, screen), f.ui.m_candidateBoxes[i].first));
+        }
+        f.monitor->m_transformedSize = {120, 607};
+        f.overview.previews[0] = {0, 0, 100, 100};
+        f.render();
+        CHECK(f.ui.m_panelBox.x == 0 && f.ui.m_panelBox.width == 120);
+        f.monitor->m_transformedSize = {120, 20};
+        trace = {};
+        f.render();
+        CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
+        CHECK(trace.rectangles.size() == 1); // No room for even one popup row.
+    }
+}
+void panelCacheAlphaAndRetry() {
+    Fixture f;
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_inputPanel = {.preedit = "", .auxiliary = "", .selected = 0,
+                        .candidates = {{"1", "中文"}, {"2", "中国"}}};
+    f.overview.alphas[0] = 0.5F;
+    f.render();
+    CHECK(trace.raster.size() == 3);
+    CHECK(std::abs(trace.rectangles[1].color.a - 0.49F) < 0.0001F);
+    CHECK(trace.rectangles[2].color.a == 0.5F);
+    for (const auto& texture : trace.textures)
+        CHECK(texture.a == 0.5F);
+    const auto first = f.ui.m_panelTextures[0].texture;
+    f.render();
+    CHECK(trace.raster.size() == 3 && f.ui.m_panelTextures[0].texture == first);
+    f.ui.m_inputPanel.selected = 1;
+    f.overview.previews[0].y += 10;
+    f.render();
+    CHECK(trace.raster.size() == 3); // Selection and position do not rerasterize.
+    CHECK(sameBox(trace.rectangles.back().box, f.ui.m_candidateBoxes[1].first));
+    f.ui.m_inputPanel.candidates[1].text = "中国人";
+    f.render();
+    CHECK(trace.raster.size() == 4 && trace.raster.back().text == "2  中国人");
+    CHECK(f.ui.m_panelTextures[0].texture == first);
+    f.monitor->settings.font = "Other Font";
+    f.render();
+    CHECK(trace.raster.size() == 7); // Title and both popup rows change font.
+    f.monitor->settings.fontSize = 24;
+    f.render();
+    CHECK(trace.raster.size() == 10);
+    f.monitor->m_transformedSize.x = 400;
+    f.render();
+    CHECK(trace.raster.size() == 12); // Panel width changes, title width does not.
+    CHECK(trace.raster.back().maxSize.x == 380);
+    f.ui.m_panelTextures[0].texture.reset();
+    trace.failRaster = true;
+    f.render();
+    CHECK(!f.ui.m_panelTextures[0].texture);
+    CHECK(trace.raster.size() == 13);
+    CHECK(f.ui.m_candidateBoxes.size() == 2); // Hitboxes do not depend on raster success.
+    f.render();
+    CHECK(f.ui.m_panelTextures[0].texture && trace.raster.size() == 14);
+    f.ui.m_inputPanel.candidates.resize(1);
+    f.render();
+    CHECK(f.ui.m_panelTextures.size() == 1 && f.ui.m_candidateBoxes.size() == 1);
+    f.overview.alphas[0] = 0;
+    trace = {};
+    f.render();
+    CHECK(trace.painted.empty() && trace.raster.empty());
+    CHECK(!trace.rectangles.empty());
+    for (const auto& rect : trace.rectangles)
+        CHECK(rect.color.a == 0);
+    for (const auto& texture : trace.textures)
+        CHECK(texture.a == 0);
+    f.ui.m_inputPanel = {};
+    trace = {};
+    f.render();
+    CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
+    CHECK(trace.rectangles.size() == 1); // Only the editor underline remains.
+}
+void panelCancellationClearsState() {
+    Fixture f;
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_editor = {"draft", 2};
+    f.ui.m_saveFailed = true;
+    f.ui.m_inputPanel = {.preedit = "拼音", .auxiliary = "", .cursor = 3, .candidates = {{"1", "中文"}}};
+    f.render();
+    CHECK(!f.ui.m_panelBox.empty() && !f.ui.m_panelTextures.empty());
+    CHECK(!f.ui.m_candidateBoxes.empty());
+    f.ui.cancel(); // Extracted production method, not a fake state reset.
+    CHECK(!f.ui.editing() && g_editor == nullptr);
+    CHECK(f.ui.m_inputPanel.preedit.empty() && f.ui.m_inputPanel.candidates.empty());
+    CHECK(f.ui.m_panelTextures.empty() && f.ui.m_candidateBoxes.empty() && f.ui.m_panelBox.empty());
+    CHECK(f.ui.m_selector.empty() && f.ui.m_editor.text.empty() && !f.ui.m_saveFailed);
+    CHECK(g_ime->ends == 1 && g_imeTimer->stops == 1 && f.overview.damages == 1);
+    trace = {};
+    f.render();
+    CHECK(trace.rectangles.empty());
+    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
+    f.ui.cancel();
+    CHECK(g_ime->ends == 1 && g_imeTimer->stops == 1 && f.overview.damages == 1);
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_inputPanel.candidates = {{"1", "中文"}};
+    f.render();
+    CHECK(!f.ui.m_candidateBoxes.empty());
+    f.monitor->settings.enabled = false;
+    trace = {};
+    f.render(); // render() invokes actual cancel() before returning early.
+    CHECK(!f.ui.editing() && f.ui.m_panelTextures.empty());
+    CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
+    CHECK(trace.submitted.empty());
+    CHECK(g_ime->ends == 2 && g_imeTimer->stops == 2 && f.overview.damages == 2);
 }
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
@@ -505,6 +949,14 @@ int main() {
         {"narrow bars still flush; short previews", narrowAndSmallBars},
         {"monitor scaling and configuration bounds", scalingAndBounds},
         {"overlapping cards, selector identity and raster retry", overlappingCardsAndRetry},
+        {"native prefix cache invalidation and measured editor budget", nativePrefixAndEditorBudget},
+        {"long native names retain cursor space and UTF-8 boundaries", longNativePrefix},
+        {"empty/inactive/offscreen panels and transparent idle", emptyPanelAndGuards},
+        {"popup composition, Chinese candidates, hitboxes and paint order", panelCompositionCandidatesAndOrder},
+        {"popup caret respects UTF-8 byte boundaries", panelCaretBoundaries},
+        {"popup screen bounds, fractional scale and row clipping", panelScreenBoundsAndClipping},
+        {"popup texture cache, selection, alpha and raster retry", panelCacheAlphaAndRetry},
+        {"actual cancellation clears popup and restores transparent idle", panelCancellationClearsState},
     };
     int failures = 0;
     for (const auto& [name, test] : tests) {

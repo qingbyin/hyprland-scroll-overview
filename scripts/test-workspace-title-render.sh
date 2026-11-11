@@ -87,6 +87,9 @@ parts = [
     extract(root / "WorkspaceTitleUI.cpp",
             "CBox CWorkspaceTitleUI::titleBox(size_t index) const"),
     extract(root / "WorkspaceTitleUI.cpp", "void CWorkspaceTitleUI::render()"),
+    extract(root / "WorkspaceTitleUI.cpp", "void CWorkspaceTitleUI::renderInputPanel()"),
+    extract(root / "WorkspaceTitleUI.cpp", "bool CWorkspaceTitleUI::editing() const"),
+    extract(root / "WorkspaceTitleUI.cpp", "void CWorkspaceTitleUI::cancel()"),
 ]
 Path(sys.argv[2]).write_text("\n\n".join(parts) + "\n", encoding="utf-8")
 PY

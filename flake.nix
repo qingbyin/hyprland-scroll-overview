@@ -34,7 +34,7 @@
                     version = self.shortRev or self.dirtyShortRev or "unknown";
                     src = ./.;
 
-                    buildInputs = [pkgs.lua5_4];
+                    buildInputs = [pkgs.lua5_4 pkgs.dbus];
 
                     enableParallelBuilding = true;
                     dontUseCmakeConfigure = true;

@@ -34,6 +34,7 @@ pkg_check_modules(deps REQUIRED IMPORTED_TARGET
     pixman-1
     wayland-server
     xkbcommon
+    dbus-1
 )
 target_link_libraries(scrolloverview PRIVATE rt PkgConfig::deps PkgConfig::lua)
 

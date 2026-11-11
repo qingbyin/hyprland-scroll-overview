@@ -48,6 +48,7 @@ shared_module(meson.project_name(), src + [version_header],
     dependency('lua5.4', 'lua', version: '>=5.4'),
     dependency('wayland-server'),
     dependency('xkbcommon'),
+    dependency('dbus-1'),
   ],
   install: true,
 )
