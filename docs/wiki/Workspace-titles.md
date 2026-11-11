@@ -166,6 +166,7 @@ All test sources are excluded from the CMake/Meson root-level source lists.
 
 ```bash
 make test-workspace-titles
+make test-workspace-title-render
 bash scripts/test-workspace-titles.sh -O1 -g \
     -fsanitize=address,undefined -fno-omit-frame-pointer
 make all
@@ -175,6 +176,17 @@ The standalone tests cover UTF-8 validation and boundaries, selector identity,
 round trips, empty-title removal, state-directory fallback, malformed files,
 and injected write/sync/rename/close failures. They do not start Hyprland or
 change the current desktop.
+
+The rendering regression test compiles the actual `titleBox()`, `render()`,
+and `flushPass()` method bodies against lightweight substitute dependencies.
+It checks default labels, queued background/text order, nonempty draw regions,
+flushing before overlays, clipping, scaling, configuration guards and texture
+caching. It does not test OpenGL, glyph pixels or Hyprland's occlusion logic.
+
+Titles must be queued as pass elements and flushed before top/overlay layers.
+In Hyprland 0.57.1, `draw(context, data, {})` draws immediately with empty
+damage; it does not enqueue the element or infer a full-screen draw region.
+Using that call for title rectangles and textures skips their drawing.
 
 Runtime checks require a separate, explicitly authorized compositor session:
 verify both layouts, fractional monitor scales, zero gaps, overlapping window

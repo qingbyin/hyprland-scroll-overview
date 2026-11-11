@@ -1,6 +1,7 @@
 #include "WorkspaceTitleUI.hpp"
 #include "scrollOverview.hpp"
 #include "SearchInput.hpp"
+#include "OverviewRender.hpp"
 
 #include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
@@ -346,6 +347,10 @@ void CWorkspaceTitleUI::render() {
     const auto font = ScrollOverview::Config::getValue<std::string>("plugin:scrolloverview:titles:font", monitor);
     const int configuredSize = std::clamp(ScrollOverview::Config::getValue<int>("plugin:scrolloverview:titles:font_size", monitor), 6, 64);
     std::unordered_set<std::string> live;
+    auto& context = g_pHyprRenderer->context();
+    auto& pass = Render::IHyprRenderer::currentPass(context);
+    // draw(..., {}) is immediate and supplies empty damage, so it paints
+    // nothing. Queue titles and let the pass calculate their draw regions.
     for (size_t i = 0; i < m_overview.images.size(); ++i) {
         const auto& workspace = m_overview.images[i]->pWorkspace;
         const auto selector = Workspace::selector(*workspace);
@@ -358,7 +363,7 @@ void CWorkspaceTitleUI::render() {
         const bool active = editing() && selector == m_selector;
         const auto color = active ? (m_saveFailed ? CHyprColor{0.55F, 0.08F, 0.05F, 0.98F * alpha} : CHyprColor{0.08F, 0.24F, 0.36F, 0.98F * alpha})
                                   : CHyprColor{0.06F, 0.07F, 0.09F, 0.94F * alpha};
-        g_pHyprRenderer->draw(g_pHyprRenderer->context(), CRectPassElement::SRectData{.box = bar, .color = color}, {});
+        pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{.box = bar, .color = color}));
         const int padding = std::max(1, static_cast<int>(6 * monitor->m_scale));
         const int width = static_cast<int>(bar.width) - 2 * padding;
         const double dpi = pango_cairo_font_map_get_resolution(PANGO_CAIRO_FONT_MAP(pango_cairo_font_map_get_default()));
@@ -387,13 +392,15 @@ void CWorkspaceTitleUI::render() {
         }
         if (cached.texture) {
             const auto size = cached.texture->m_size;
-            g_pHyprRenderer->draw(g_pHyprRenderer->context(), CTexPassElement::SRenderData{
+            pass.add(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{
                 .tex = cached.texture,
                 .box = CBox{bar.x + padding, bar.y + (bar.height - size.y) / 2, size.x, size.y},
                 .a = alpha,
                 .clipBox = bar,
-            }, {});
+            }));
         }
     }
     std::erase_if(m_textures, [&live](const auto& entry) { return !live.contains(entry.first); });
+    // Finish before top/overlay layers are submitted, matching preview order.
+    OverviewRender::flushPass(context, monitor);
 }
