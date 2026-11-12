@@ -1,15 +1,19 @@
 # Workspace titles
 
-Each preview has a centered title bar near its upper edge, with a
-`rgba(30, 30, 46, 0.8)` background and `#A7AFD5` text matching the Waybar theme.
-The default font is DejaVuSansM Nerd Font with FontAwesome 7 Free as fallback,
-at Semibold weight (600) and 20 logical pixels. The bar is shifted upward by
-12 logical pixels to separate it from window content without moving or
-resizing the windows. The native workspace name or number and the custom
-title are centered together, with four spaces between them. Without a custom
-title, only the native label is shown. A custom title changes only
-ScrollOverview's display: Hyprland workspace 3 remains workspace 3, including
-its native name, dispatchers, rules, and external workspace indicators.
+Each preview has a centered title bar near its upper edge, with `#A7AFD5`
+text matching the Waybar theme. The bar is fully transparent: neither normal
+display nor editing draws a background fill. The default font is DejaVuSansM
+Nerd Font with FontAwesome 7 Free as fallback, at Semibold weight (600) and
+20 logical pixels. The bar is shifted upward by 12 logical pixels to separate
+it from window content without moving or resizing the windows.
+
+Normal display uses the `titles:format` string, which defaults to
+`$workspace    $title` with four spaces between the variables. With this
+default, the native workspace name or number and custom title are centered
+together; without a custom title, only the native label is shown. A custom
+title changes only ScrollOverview's display: Hyprland workspace 3 remains
+workspace 3, including its native name, dispatchers, rules, and external
+workspace indicators.
 
 The bar uses the existing workspace preview box in both horizontal and
 vertical layouts. Its height, upward offset and text follow the monitor scale.
@@ -25,20 +29,23 @@ title bars.
 Click a title with the primary mouse button to start editing. The primary
 button follows the overview's left-handed setting. The insertion point is
 shown as a vertical bar. Long text is cropped around that insertion point.
-The native name is read-only; editing a workspace without an existing custom
-title starts with an empty draft. Long native names are shortened while editing
-to leave room for the cursor. A thin green (`#16a085`) underline indicates
-the active editor; a failed save changes it to red (`#f7768e`). The title
-background remains visible both while editing and when idle. Its 0.8 opacity
-is multiplied by the workspace overview alpha; text and underlines use the
-workspace overview alpha directly, so all parts fade with the preview.
+Editing always shows the native name, four spaces, and the editor; it does
+not apply `titles:format`. The native name is read-only, and the custom title
+remains editable even if the format omits `$title` or is empty. Editing a
+workspace without an existing custom title starts with an empty draft.
+Long native names are shortened while editing to leave room for the cursor.
+A thin green (`#16a085`) underline indicates the active editor; a failed save
+changes it to red (`#f7768e`). No title-bar background fill is drawn in either
+state. Text and underlines use the workspace overview alpha directly, so
+they fade with the preview.
 
 - Enter or keypad Enter saves the title.
 - Escape cancels without saving.
 - Backspace removes the preceding Unicode codepoint.
 - Delete removes the following Unicode codepoint.
 - Left/Right move by one Unicode codepoint; Home/End move to either end.
-- Saving an empty title removes the override and restores the native label.
+- Saving an empty title removes the override; `$title` then substitutes empty
+  text. With the default format, this leaves only the native label.
 
 Clicking outside the current title cancels editing and consumes that click;
 it does not select, close, or drag a window. Clicking a different title on the
@@ -66,10 +73,10 @@ composition does not prematurely save or discard the title.
 
 The popup is rendered by the plugin using Fcitx's client-side input-panel API.
 The overview is compositor-owned and has no application surface to which a
-native Wayland input-method popup could attach. The candidate popup has its
-own background and selection colors for readability, separate from the title
-bar's background. The popup uses the configured title font and weight, not
-Fcitx's native popup theme. No clipboard, external text-entry application,
+native Wayland input-method popup could attach. The candidate popup retains
+its own background and selection colors for readability, independent of the
+transparent title bar. The popup uses the configured title font and weight,
+not Fcitx's native popup theme. No clipboard, external text-entry application,
 or shell command is involved.
 
 Fcitx key processing is asynchronous and ordered, with a one-second timeout.
@@ -93,6 +100,7 @@ plugin {
     scrolloverview {
         titles {
             enabled = true
+            format = $workspace    $title
             font = DejaVuSansM Nerd Font,FontAwesome 7 Free Semibold
             font_size = 20
             height = 40
@@ -107,9 +115,9 @@ Separate fallback families with commas, without quoting individual families,
 and put the weight after the family list. The default description above
 parses as two families with weight 600. Custom descriptions such as
 `Noto Sans CJK SC` or `Noto Sans CJK SC Bold` retain their own weight; the
-renderer does not force Semibold on user overrides. The theme colors are
-fixed, while the existing font, size, height and offset options remain
-configurable.
+renderer does not force Semibold on user overrides. The text and underline
+colors are fixed; the title bar has no background fill. The font, size, height
+and offset options remain configurable.
 
 `font_size` is the logical pixel font size, from 6 to 64. `height` is the
 logical pixel bar height, from 16 to 128. Text is reduced when necessary to
@@ -117,16 +125,66 @@ fit a smaller bar. `offset` shifts the entire bar upward from the preview's
 top edge, from 0 to 128 logical pixels; 0 restores the original position.
 It is a position adjustment, not a guaranteed gap from every window, since
 window positions and decorations vary. The clickable editing area and input
-method popup follow the shifted bar. Disabling titles also cancels an active
-title edit.
+method popup follow the shifted bar. `enabled = false` disables titles and
+cancels an active title edit. An empty `format` only hides the normal display
+text; it does not disable the bar's clickable editing area.
 
-The same options can be set globally or per monitor using Lua:
+### Display format
+
+`titles:format` is a string used only for normal display. `$workspace`
+substitutes the native Hyprland `displayName`, which can be a number or name;
+`$title` substitutes the custom title, or empty text when no title is set.
+The default is `$workspace    $title`, with four ASCII spaces between the
+variables. The resulting text is centered as a whole.
+
+Variables may be repeated, reordered, or omitted. For example,
+`$title / $workspace / $title` repeats the title, while `$workspace` omits it.
+`$$` produces a single literal dollar sign, and unknown variables such as
+`$unknown` are preserved unchanged. Substitution is non-recursive: dollar
+signs or variable-like text inside a native name or custom title are not
+expanded again. The output is plain text, not Pango markup; markup-like text
+is displayed literally. Pango font descriptions still configure fonts as
+described above.
+
+After substitution, leading and trailing ASCII spaces (U+0020) are removed.
+Internal spaces and literal icons are preserved. An empty custom title
+replaces only `$title` with empty text; it does not automatically remove an
+adjacent icon or separator. For workspace 3 with title `开发`, the format
+`$workspace   $title` displays `3   开发`. Without a custom title, it displays
+`3 `, keeping the icon while trimming the trailing spaces.
+
+An empty format displays empty text but leaves the title bar clickable.
+Clicking still opens the native-name-plus-four-spaces editor, regardless of
+whether the format includes `$title`. Only `titles:enabled = false` disables
+titles; formatting does not change saved titles or native workspace names.
+
+Set the format globally in Hyprlang without string quotes or escaping:
+
+```ini
+plugin {
+    scrolloverview {
+        titles {
+            format = $workspace   $title
+        }
+    }
+}
+```
+
+Hyprlang 0.6.8 passes this format through unchanged unless a matching
+configuration variable is defined. Do not define Hyprlang variables named
+`$workspace` or `$title`: Hyprlang substitutes matching variables before the
+plugin receives the format. Lua strings are not affected by this Hyprlang
+variable substitution.
+
+The same options, including `format`, can be set globally or per monitor
+using Lua. Lua string values use quotes:
 
 ```lua
 hl.plugin.scrolloverview.configure({
     output = "DP-1", -- omit for global settings
     titles = {
         enabled = true,
+        format = "$workspace   $title",
         font = "Noto Sans CJK SC",
         font_size = 22,
         height = 40,
@@ -234,19 +292,20 @@ bash scripts/test-workspace-titles.sh -O1 -g \
 make all
 ```
 
-The standalone tests cover UTF-8 validation and boundaries, selector identity,
-round trips, empty-title removal, state-directory fallback, malformed files,
-and injected write/sync/rename/close failures. They do not start Hyprland or
-change the current desktop.
+The standalone tests cover format substitution and escaping, UTF-8 validation
+and boundaries, selector identity, round trips, empty-title removal,
+state-directory fallback, malformed files, and injected write/sync/rename/close
+failures. They do not start Hyprland or change the current desktop.
 
 The rendering regression test compiles the actual `titleBox()`, `render()`,
 and `flushPass()` method bodies against lightweight substitute dependencies.
 It also extracts the real input-panel renderer and cancellation methods.
-It checks registered font defaults, centered labels, title background/text
-colors, green/red edit underlines, alpha multiplication, prefix spacing,
-candidate popups and hitboxes, nonempty draw regions, flushing before overlays,
-clipping, scaling, configuration guards and texture caching. It loads the
-system Pango library (`libpango-1.0.so.0`) to verify the fallback family list
+It checks registered font and format defaults, formatted and centered labels,
+transparent title backgrounds, text color, green/red edit underlines, alpha
+multiplication, prefix spacing, candidate popups and hitboxes, nonempty draw
+regions, flushing before overlays, clipping, scaling, configuration guards,
+empty formats, per-monitor formats and texture caching. It loads the system
+Pango library (`libpango-1.0.so.0`) to verify the fallback family list
 and weight, including custom font overrides; layout and DPI remain test
 substitutes. It does not test OpenGL, glyph pixels or Hyprland's occlusion
 logic.
@@ -267,5 +326,15 @@ Using that call for title rectangles and textures skips their drawing.
 Runtime checks require a separate, explicitly authorized compositor session:
 verify both layouts, fractional monitor scales, zero gaps, overlapping window
 previews, long CJK titles, submap bindings, saving/cancelling while keys are
-held, closing an editor before key release, and failed saves. Compilation and
-the pure tests do not establish that these desktop interactions have passed.
+held, closing an editor before key release, and failed saves. Check that title
+bars draw no background fill in normal or editing states, while edit
+underlines and the IME popup background remain visible.
+
+Format checks include the default, repeated/reordered/omitted variables,
+`$$`, unknown variables, non-recursive replacement, literal markup, outer
+ASCII-space trimming, preserved internal spaces, and icons with empty titles.
+Check global and per-monitor formats, including an empty format: the bar
+must remain clickable and editing must retain the native name, four spaces,
+and editor. Verify that `enabled = false` disables titles instead.
+Compilation and the pure tests do not establish that these desktop
+interactions have passed.

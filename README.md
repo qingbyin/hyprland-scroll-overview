@@ -90,17 +90,51 @@ This setting does not affect overview-origin drags with `toggle all` because eve
 
 ## Workspace titles
 
-Each workspace preview has a centered title bar matching the Waybar theme:
+Each workspace preview has a centered title bar with Waybar-themed text:
 20px DejaVuSansM Nerd Font with FontAwesome 7 Free fallback, Semibold (600),
-`#A7AFD5` text, and a `rgba(30, 30, 46, 0.8)` background. Font and size remain
-configurable. The edit underline is green (`#16a085`), or red (`#f7768e`) after
-a failed save. The background, text and underline fade with the workspace.
+and `#A7AFD5` text. Font and size remain configurable. The title bar is fully
+transparent: neither normal display nor editing draws a background fill.
+The edit underline is green (`#16a085`), or red (`#f7768e`) after a failed
+save. Text and underlines fade with the workspace. The IME candidate popup
+keeps its own background for readability.
 The bar is shifted upward by 12 logical pixels for more distance from window
 content; `titles:offset` adjusts this shift, and 0 restores its original position.
-The native workspace name and editable title are separated by four spaces.
-Click to edit, press Enter to save, or Escape to cancel. Fcitx5 composition and
-candidate selection support Chinese input. Titles belong only to ScrollOverview:
-workspace 3 can display `3    开发` without changing its Hyprland name or number.
+
+The `titles:format` string defaults to `$workspace    $title` (four spaces).
+In normal display, `$workspace` is Hyprland's native `displayName` (number or
+name), and `$title` is the custom title. Variables can be repeated, reordered,
+or omitted. `$$` produces one dollar sign; unknown variables stay unchanged.
+Replacement is non-recursive, and text is not parsed as Pango markup.
+Leading and trailing ASCII spaces are trimmed, while internal spaces and
+literal icons remain. An empty title substitutes empty text without removing
+icons. An empty format displays no text but keeps the clickable editing area;
+only `titles:enabled = false` disables titles.
+
+For example, set this globally inside `plugin:scrolloverview:titles` in
+Hyprlang, without string quotes or escaping:
+
+```ini
+format = $workspace   $title
+```
+
+Do not define Hyprlang configuration variables named `$workspace` or
+`$title`, since Hyprlang substitutes them before the plugin sees the format.
+Lua strings are not affected by this substitution. Lua supports the same
+options globally or per monitor:
+
+```lua
+hl.plugin.scrolloverview.configure({
+    output = "DP-1", -- omit for global settings
+    titles = { format = "$workspace   $title" },
+})
+```
+
+Click to edit, press Enter to save, or Escape to cancel. Editing always shows
+the native name, four spaces, and the editor without applying the format,
+so titles remain editable even when `$title` is omitted. Fcitx5 composition
+and candidate selection support Chinese input. Titles belong only to
+ScrollOverview: workspace 3 can display `3    开发` with the default format
+without changing its Hyprland name or number.
 Building requires the `dbus-1` development package; Chinese composition requires
 a running Fcitx5 instance and a configured Chinese input method.
 
