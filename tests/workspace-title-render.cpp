@@ -3,11 +3,16 @@
 // The script extracts unchanged production definitions plus the real flushPass.
 // No copied render algorithm, Hyprland header tree, GL context or compositor.
 // Fakes model submission, damage, rectangular coverage and painter's order only.
-// Pango DPI is deterministic; shaping, glyph pixels, real layout geometry,
+// The real Pango parser checks font families/weights; DPI/layout are deterministic.
+// Shaping, glyph pixels, real layout geometry,
 // input, persistence, renderer state and Hyprland occlusion are NOT tested here.
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <dlfcn.h>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -65,8 +70,8 @@ struct CHyprColor { float r = 0, g = 0, b = 0, a = 1; };
 
 struct Settings {
     bool enabled = true;
-    int height = 40, fontSize = 22, offset = 12;
-    std::string font = "sans-serif";
+    int height = 40, fontSize = 20, offset = 12;
+    std::string font = "DejaVuSansM Nerd Font,FontAwesome 7 Free Semibold";
 };
 struct Monitor {
     double m_scale = 1;
@@ -146,11 +151,35 @@ double pango_cairo_font_map_get_resolution(void*) { return fakeDpi; }
 // measured prefix, not a byte-count estimate. These do not test Pango shaping.
 constexpr int PANGO_SCALE = 1024;
 struct FakePangoContext {};
-struct FakeFont { std::string family; int size = 0; };
+// Load only the description API, keeping deterministic layout fakes and the
+// standalone test command (no Hyprland headers or Pango development flags).
+struct PangoParser {
+    void* library = dlopen("libpango-1.0.so.0", RTLD_NOW | RTLD_LOCAL);
+    template <typename T> T symbol(const char* name) {
+        CHECK(library);
+        const auto result = reinterpret_cast<T>(dlsym(library, name));
+        CHECK(result);
+        return result;
+    }
+    void* (*parse)(const char*) = symbol<void* (*)(const char*)>("pango_font_description_from_string");
+    const char* (*family)(const void*) = symbol<const char* (*)(const void*)>("pango_font_description_get_family");
+    int (*weight)(const void*) = symbol<int (*)(const void*)>("pango_font_description_get_weight");
+    void (*free)(void*) = symbol<void (*)(void*)>("pango_font_description_free");
+    ~PangoParser() { dlclose(library); }
+};
+struct FakeFont { std::string family; int size = 0, weight = 400; };
 struct FakeLayout { std::string text; FakeFont font; };
 FakePangoContext* pango_font_map_create_context(void*) { return new FakePangoContext; }
 FakeLayout* pango_layout_new(FakePangoContext*) { return new FakeLayout; }
-FakeFont* pango_font_description_from_string(const char* font) { return new FakeFont{font}; }
+FakeFont* pango_font_description_from_string(const char* font) {
+    static PangoParser pango;
+    auto* description = pango.parse(font);
+    CHECK(description);
+    auto* result = new FakeFont{pango.family(description), 0, pango.weight(description)};
+    pango.free(description);
+    return result;
+}
+int pango_font_description_get_weight(FakeFont* font) { return font->weight; }
 void pango_font_description_set_size(FakeFont* font, int size) { font->size = size; }
 void pango_layout_set_font_description(FakeLayout* layout, FakeFont* font) { layout->font = *font; }
 void pango_layout_set_text(FakeLayout* layout, const char* text, size_t size) { layout->text.assign(text, size); }
@@ -170,10 +199,17 @@ void pango_font_description_free(FakeFont* font) { delete font; }
 template <typename T> void g_object_unref(T* object) { delete object; }
 
 namespace Hyprgraphics {
+    struct CColor {
+        struct SSRGB { double r = 0, g = 0, b = 0; };
+        SSRGB rgb;
+        explicit CColor(SSRGB value) : rgb(value) {}
+        SSRGB asRgb() const { return rgb; }
+    };
     struct CTextResource {
         struct STextResourceData {
             std::string text, font;
-            int fontSize = 0;
+            int fontSize = 0, weight = 400;
+            CColor color{CColor::SSRGB{1, 1, 1}};
             Vector2D maxSize;
             bool wrap = false, ellipsize = false;
         };
@@ -361,6 +397,36 @@ std::string topAt(double x, double y) {
             return it->label;
     return {};
 }
+bool sameColor(const CHyprColor& color, int r, int g, int b, float alpha) {
+    return std::abs(color.r - r / 255.F) < 0.00001F &&
+        std::abs(color.g - g / 255.F) < 0.00001F &&
+        std::abs(color.b - b / 255.F) < 0.00001F &&
+        std::abs(color.a - alpha) < 0.00001F;
+}
+void configuredThemeDefaults() {
+    // Check the actual registered defaults, not just the fixture's settings.
+    std::ifstream file(std::filesystem::path(__FILE__).parent_path() / "../Config.cpp");
+    CHECK(file.good());
+    const std::string source{std::istreambuf_iterator<char>(file), {}};
+    const auto registration = [&](const std::string& key) {
+        const auto quotedKey = '"' + key + '"';
+        const auto begin = source.find(quotedKey);
+        CHECK(begin != std::string::npos);
+        CHECK(source.find(quotedKey, begin + quotedKey.size()) == std::string::npos);
+        const auto end = source.find(';', begin);
+        CHECK(end != std::string::npos);
+        return source.substr(begin, end - begin);
+    };
+    const auto font = registration("plugin:scrolloverview:titles:font");
+    CHECK(font.contains("Hyprlang::STRING{\"" + Settings{}.font + "\"}"));
+    auto* description = pango_font_description_from_string(Settings{}.font.c_str());
+    CHECK(description->family == "DejaVuSansM Nerd Font,FontAwesome 7 Free");
+    CHECK(pango_font_description_get_weight(description) == 600);
+    pango_font_description_free(description);
+    auto size = registration("plugin:scrolloverview:titles:font_size");
+    std::erase_if(size, [](unsigned char c) { return std::isspace(c); });
+    CHECK(size.contains("\"," + std::to_string(Settings{}.fontSize) + ",SIntValueOptions{"));
+}
 void defaultsAndOrdering() {
     Fixture f;
     f.add("name:dev", "Development", {100, 350, 300, 200});
@@ -370,18 +436,25 @@ void defaultsAndOrdering() {
         .box = {0, 0, 800, 600}, .color = {1, 0, 0, 1}}));
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{
-        "rect", "text:1", "text:Development"}));
+        "rect", "rect", "text:1", "rect", "text:Development"}));
     CHECK(trace.flushes == 1 && trace.clears == 1);
     CHECK(sameBox(trace.damage.front().box, {0, 0, 800, 600}));
     CHECK(trace.events.at(trace.events.size() - 2) == "flush");
     CHECK(trace.events.back() == "clear");
     CHECK(trace.raster.size() == 2);
     CHECK(trace.raster[0].text == "1" && trace.raster[1].text == "Development");
-    CHECK(trace.raster[0].font == "sans-serif");
+    CHECK(trace.raster[0].font == Settings{}.font);
+    CHECK(trace.raster[0].weight == 600);
+    const auto rgb = trace.raster[0].color.asRgb();
+    CHECK(rgb.r == 167.0 / 255.0 && rgb.g == 175.0 / 255.0 && rgb.b == 213.0 / 255.0);
     CHECK(!trace.raster[0].wrap && trace.raster[0].ellipsize);
     CHECK(sameBox(f.ui.titleBox(0), {100, 100, 300, 40}));
-    CHECK(trace.rectangles.size() == 1); // Only the queued preview, no title fill.
-    CHECK(trace.raster[0].fontSize == 16); // 22 logical px converted to integer points.
+    CHECK(trace.rectangles.size() == 3); // Preview, then one fill per title.
+    for (size_t i = 1; i < trace.rectangles.size(); ++i) {
+        CHECK(sameBox(trace.rectangles[i].box, f.ui.titleBox(i - 1)));
+        CHECK(sameColor(trace.rectangles[i].color, 30, 30, 46, 0.8F));
+    }
+    CHECK(trace.raster[0].fontSize == 15); // 20 logical px converted to integer points.
     CHECK(topAt(250, 120) == "text:1");
     CHECK(topAt(250, 370) == "text:Development");
     CHECK(topAt(390, 110) == "rect");
@@ -426,7 +499,7 @@ void cacheAndInvalidation() {
     const auto first = f.ui.m_textures.at("1").texture;
     f.render();
     CHECK(trace.raster.size() == 1 && f.ui.m_textures.at("1").texture == first);
-    CHECK(trace.flushes == 2 && trace.submitted.size() == 2);
+    CHECK(trace.flushes == 2 && trace.submitted.size() == 4);
     f.overview.previews[0].x += 10;
     f.render();
     CHECK(trace.raster.size() == 1); // Translation alone does not rerasterize.
@@ -437,12 +510,13 @@ void cacheAndInvalidation() {
     f.overview.images[0]->pWorkspace->name = "Renamed";
     f.render();
     CHECK(trace.raster.size() == 3 && trace.raster.back().text == "Renamed");
-    f.monitor->settings.font = "Other Font";
+    f.monitor->settings.font = "Other Font Bold";
     f.render();
-    CHECK(trace.raster.size() == 4 && trace.raster.back().font == "Other Font");
+    CHECK(trace.raster.size() == 4 && trace.raster.back().font == "Other Font Bold");
     f.monitor->settings.fontSize = 18;
     f.render();
-    CHECK(trace.raster.size() == 5);
+    CHECK(trace.raster.size() == 5 && trace.raster.back().fontSize == 13);
+    CHECK(trace.raster.back().weight == 700);
     f.overview.previews[0].width -= 20;
     f.render();
     CHECK(trace.raster.size() == 6);
@@ -452,6 +526,10 @@ void cacheAndInvalidation() {
     f.add("1", "Recreated", {100, 100, 300, 200});
     f.render();
     CHECK(trace.raster.size() == 7 && trace.raster.back().text == "Recreated");
+    f.monitor->settings.font = "Other Font";
+    f.render();
+    CHECK(trace.raster.size() == 8 && trace.raster.back().font == "Other Font");
+    CHECK(trace.raster.back().weight == 400); // No forced Semibold on user fonts.
 }
 void editingAndAlpha() {
     Fixture f;
@@ -462,18 +540,24 @@ void editingAndAlpha() {
     f.render();
     CHECK(trace.raster.back().text == "1    Dr|aft");
     CHECK(trace.textures.back().a == 0.5F);
-    CHECK(trace.rectangles.back().color.a == 0.5F);
+    CHECK(trace.rectangles.size() == 2);
+    CHECK(sameColor(trace.rectangles.front().color, 30, 30, 46, 0.4F));
+    CHECK(sameBox(trace.rectangles.front().box, f.ui.titleBox(0)));
+    CHECK(sameColor(trace.rectangles.back().color, 22, 160, 133, 0.5F));
+    CHECK(trace.raster.back().weight == 600);
+    const auto rgb = trace.raster.back().color.asRgb();
+    CHECK(rgb.r == 167.0 / 255.0 && rgb.g == 175.0 / 255.0 && rgb.b == 213.0 / 255.0);
     CHECK(sameBox(trace.rectangles.back().box, {100, 139, 300, 1}));
     const auto size = trace.textures.back().tex->m_size;
     CHECK(trace.textures.back().box.x == 100 + (300 - size.x) / 2);
-    CHECK(topAt(101, 101).empty());
+    CHECK(topAt(101, 101) == "rect");
     f.ui.m_editor.cursor = 3;
     f.render();
     CHECK(trace.raster.size() == 2 && trace.raster.back().text == "1    Dra|ft");
     f.ui.m_saveFailed = true;
     f.render();
     CHECK(trace.raster.size() == 2);
-    CHECK(trace.rectangles.back().color.r == 0.85F);
+    CHECK(sameColor(trace.rectangles.back().color, 247, 118, 142, 0.5F));
     CHECK(sameBox(trace.rectangles.back().box, {100, 139, 300, 1}));
     f.overview.alphas[0] = 0;
     const auto painted = trace.painted.size();
@@ -491,9 +575,9 @@ void clippingAndOffscreen() {
     // Deliberately oversized raster output: clipBox must still constrain paint.
     trace.oversizedTexture = true;
     f.render();
-    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
+    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1"}));
     CHECK(sameBox(trace.textures[0].clipBox, {-50, -10, 200, 40}));
-    CHECK(trace.rectangles.empty());
+    CHECK(trace.rectangles.size() == 1);
     CHECK(!trace.painted[0].box.empty());
     for (const auto& p : trace.painted)
         CHECK(sameBox(intersect(p.box, {0, 0, 150, 30}), p.box));
@@ -509,10 +593,10 @@ void narrowAndSmallBars() {
     g_editor = &f.ui;
     f.ui.m_selector = "1";
     f.render();
-    CHECK((trace.submitted == std::vector<std::string>{"rect"}));
+    CHECK((trace.submitted == std::vector<std::string>{"rect", "rect"}));
     CHECK(trace.raster.empty() && trace.flushes == 1);
     CHECK(sameBox(trace.rectangles.back().box, {100, 139, 20, 1}));
-    CHECK(topAt(105, 105).empty()); // No filled editor background.
+    CHECK(topAt(105, 105) == "rect"); // Background survives a skipped text raster.
     CHECK(topAt(105, 139) == "rect"); // Early text-skip still flushes the underline.
     f.overview.previews[0] = {100, 100, 200, 8};
     f.render();
@@ -531,10 +615,10 @@ void scalingAndBounds() {
         CHECK(sameBox(bar, {100 * scale, 100 * scale, 300 * scale, 40 * scale}));
         const int padding = std::max(1, static_cast<int>(6 * scale));
         CHECK(trace.raster.back().maxSize.x == 300 * scale - 2 * padding);
-        CHECK(trace.raster.back().fontSize == static_cast<int>(22 * scale * 0.75));
+        CHECK(trace.raster.back().fontSize == static_cast<int>(20 * scale * 0.75));
         const auto size = trace.textures.back().tex->m_size;
         CHECK(trace.textures.back().box.x == bar.x + (bar.width - size.x) / 2);
-        CHECK(trace.rectangles.empty());
+        CHECK(trace.rectangles.size() == 1);
         CHECK(trace.textures.back().box.y == bar.y + (bar.height - size.y) / 2);
         CHECK(sameBox(trace.damage.back().box, {0, 0, 800 * scale, 600 * scale}));
     }
@@ -573,7 +657,8 @@ void titleOffsetAndHitbox() {
         f.ui.m_inputPanel.preedit = "拼音";
         f.render();
         const auto bar = f.ui.titleBox(0);
-        CHECK(sameBox(trace.rectangles.front().box,
+        CHECK(sameBox(trace.rectangles.front().box, bar));
+        CHECK(sameBox(trace.rectangles[1].box,
             {bar.x, bar.y + bar.height - scale, bar.width, scale}));
         CHECK(sameBox(trace.textures.front().clipBox, bar));
         CHECK(f.ui.m_panelBox.y == bar.y + bar.height + 4 * scale);
@@ -594,7 +679,7 @@ void overlappingCardsAndRetry() {
     g_store->values["1"] = "Numbered one";
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{
-        "text:1    Numbered one", "text:Named one"}));
+        "rect", "text:1    Numbered one", "rect", "text:Named one"}));
     CHECK(topAt(250, 120) == "text:Named one");
     CHECK(f.ui.m_textures.size() == 2); // Numeric and named selectors stay distinct.
     f.ui.m_textures.clear();
@@ -612,7 +697,7 @@ void nativePrefixAndEditorBudget() {
     g_store->values["1"] = "Custom";
     f.render();
     CHECK(trace.raster.back().text == "1    Custom");
-    CHECK(trace.rectangles.empty() && prefixMeasurements == 0);
+    CHECK(trace.rectangles.size() == 1 && prefixMeasurements == 0);
     const auto first = f.ui.m_textures.at("1").texture;
     const auto size = first->m_size;
     CHECK(trace.textures.back().box.x == 100 + (300 - size.x) / 2);
@@ -719,8 +804,8 @@ void emptyPanelAndGuards() {
     f.ui.m_inputPanel.preedit = "拼音";
     f.render(); // Inactive editors cannot show a stale composition panel.
     CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
-    CHECK(trace.rectangles.empty());
-    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
+    CHECK(trace.rectangles.size() == 1);
+    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1"}));
     trace = {};
     g_editor = &f.ui;
     f.ui.m_selector = "1";
@@ -728,9 +813,9 @@ void emptyPanelAndGuards() {
     f.render();
     CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
     CHECK(f.ui.m_panelTextures.empty());
-    CHECK(trace.rectangles.size() == 1);
-    CHECK(sameBox(trace.rectangles[0].box, {100, 139, 300, 1}));
-    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1    |"}));
+    CHECK(trace.rectangles.size() == 2);
+    CHECK(sameBox(trace.rectangles[1].box, {100, 139, 300, 1}));
+    CHECK((trace.submitted == std::vector<std::string>{"rect", "rect", "text:1    |"}));
     f.ui.m_inputPanel.preedit = "拼音";
     f.render();
     CHECK(!f.ui.m_panelBox.empty());
@@ -760,20 +845,20 @@ void panelCompositionCandidatesAndOrder() {
     };
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{
-        "rect", "text:1    |", "rect", "text:拼│音", "text:中文输入",
+        "rect", "rect", "text:1    |", "rect", "text:拼│音", "text:中文输入",
         "text:1  拼音", "rect", "text:2  中文", "text:‹  ›"}));
     CHECK(trace.flushes == 1 && trace.clears == 1);
     CHECK(trace.events[trace.events.size() - 2] == "flush");
     CHECK(trace.events.back() == "clear");
-    CHECK(sameBox(f.ui.m_panelBox, {0, 144, 560, 190}));
-    CHECK(trace.rectangles.size() == 3); // Underline, popup, selected candidate.
-    CHECK(sameBox(trace.rectangles[1].box, f.ui.m_panelBox));
-    CHECK(trace.rectangles[1].color.a == 0.98F);
+    CHECK(sameBox(f.ui.m_panelBox, {0, 144, 560, 180}));
+    CHECK(trace.rectangles.size() == 4); // Title, underline, popup, selected candidate.
+    CHECK(sameBox(trace.rectangles[2].box, f.ui.m_panelBox));
+    CHECK(trace.rectangles[2].color.a == 0.98F);
     CHECK(f.ui.m_candidateBoxes.size() == 2);
     for (size_t i = 0; i < f.ui.m_candidateBoxes.size(); ++i) {
         const auto& [box, candidate] = f.ui.m_candidateBoxes[i];
         CHECK(candidate == static_cast<int>(i));
-        CHECK(sameBox(box, {10, 222 + 34.0 * i, 540, 34}));
+        CHECK(sameBox(box, {10, 218 + 32.0 * i, 540, 32}));
         CHECK(sameBox(box, trace.textures[3 + i].clipBox));
         CHECK(box.contains(box.x + box.width / 2, box.y + box.height / 2));
         CHECK(!box.contains(box.x + box.width, box.y + box.height / 2));
@@ -782,14 +867,15 @@ void panelCompositionCandidatesAndOrder() {
         CHECK(!box.contains(20, 200)); // Auxiliary row is not a candidate.
         CHECK(!box.contains(20, 300)); // Paging indicators are not candidates.
     }
-    CHECK(sameBox(trace.rectangles[2].box, f.ui.m_candidateBoxes[1].first));
-    CHECK(trace.rectangles[2].color.r == 0.18F && trace.rectangles[2].color.b == 0.55F);
+    CHECK(sameBox(trace.rectangles[3].box, f.ui.m_candidateBoxes[1].first));
+    CHECK(trace.rectangles[3].color.r == 0.18F && trace.rectangles[3].color.b == 0.55F);
     CHECK(topAt(20, 270) == "text:2  中文");
-    CHECK(topAt(101, 101).empty()); // Popup fill must not restore the titlebar fill.
+    CHECK(topAt(101, 101) == "rect"); // Title background remains independent of the popup.
     for (size_t i = 1; i < trace.raster.size(); ++i) {
-        CHECK(trace.raster[i].maxSize.x == 540 && trace.raster[i].maxSize.y == 34);
+        CHECK(trace.raster[i].maxSize.x == 540 && trace.raster[i].maxSize.y == 32);
         CHECK(!trace.raster[i].wrap && trace.raster[i].ellipsize);
-        CHECK(trace.raster[i].font == "sans-serif" && trace.raster[i].fontSize == 16);
+        CHECK(trace.raster[i].font == Settings{}.font && trace.raster[i].fontSize == 15);
+        CHECK(trace.raster[i].weight == 600);
     }
 }
 void panelCaretBoundaries() {
@@ -842,7 +928,7 @@ void panelScreenBoundsAndClipping() {
         for (const auto& [box, candidate] : f.ui.m_candidateBoxes) {
             CHECK(candidate >= 0 && candidate < 2);
             CHECK(sameBox(intersect(box, panel), box));
-            CHECK(box.height == 34 * scale);
+            CHECK(box.height == 32 * scale);
         }
         // Force raster overflow and prove actual submission clips every row.
         f.ui.m_panelTextures.clear();
@@ -865,7 +951,7 @@ void panelScreenBoundsAndClipping() {
             f.ui.m_inputPanel.candidates.push_back({std::to_string(i + 1), "候选"});
         f.render();
         CHECK(sameBox(intersect(f.ui.m_panelBox, screen), f.ui.m_panelBox));
-        const auto maxRows = static_cast<size_t>(std::floor((607 - 20 * scale) / (34 * scale)));
+        const auto maxRows = static_cast<size_t>(std::floor((607 - 20 * scale) / (32 * scale)));
         CHECK(f.ui.m_panelTextures.size() == maxRows);
         CHECK(f.ui.m_candidateBoxes.size() == maxRows);
         for (size_t i = 0; i < maxRows; ++i) {
@@ -880,7 +966,7 @@ void panelScreenBoundsAndClipping() {
         trace = {};
         f.render();
         CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
-        CHECK(trace.rectangles.size() == 1); // No room for even one popup row.
+        CHECK(trace.rectangles.size() == 2); // Title and underline, no room for popup rows.
     }
 }
 void panelCacheAlphaAndRetry() {
@@ -892,8 +978,9 @@ void panelCacheAlphaAndRetry() {
     f.overview.alphas[0] = 0.5F;
     f.render();
     CHECK(trace.raster.size() == 3);
-    CHECK(std::abs(trace.rectangles[1].color.a - 0.49F) < 0.0001F);
-    CHECK(trace.rectangles[2].color.a == 0.5F);
+    CHECK(sameColor(trace.rectangles[0].color, 30, 30, 46, 0.4F));
+    CHECK(std::abs(trace.rectangles[2].color.a - 0.49F) < 0.0001F);
+    CHECK(trace.rectangles[3].color.a == 0.5F);
     for (const auto& texture : trace.textures)
         CHECK(texture.a == 0.5F);
     const auto first = f.ui.m_panelTextures[0].texture;
@@ -908,9 +995,13 @@ void panelCacheAlphaAndRetry() {
     f.render();
     CHECK(trace.raster.size() == 4 && trace.raster.back().text == "2  中国人");
     CHECK(f.ui.m_panelTextures[0].texture == first);
-    f.monitor->settings.font = "Other Font";
+    f.monitor->settings.font = "Other Font Bold";
     f.render();
     CHECK(trace.raster.size() == 7); // Title and both popup rows change font.
+    for (size_t i = 4; i < 7; ++i) {
+        CHECK(trace.raster[i].font == "Other Font Bold");
+        CHECK(trace.raster[i].weight == 700);
+    }
     f.monitor->settings.fontSize = 24;
     f.render();
     CHECK(trace.raster.size() == 10);
@@ -942,7 +1033,7 @@ void panelCacheAlphaAndRetry() {
     trace = {};
     f.render();
     CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
-    CHECK(trace.rectangles.size() == 1); // Only the editor underline remains.
+    CHECK(trace.rectangles.size() == 2); // Title background and editor underline remain.
 }
 void panelCancellationClearsState() {
     Fixture f;
@@ -962,8 +1053,8 @@ void panelCancellationClearsState() {
     CHECK(g_ime->ends == 1 && g_imeTimer->stops == 1 && f.overview.damages == 1);
     trace = {};
     f.render();
-    CHECK(trace.rectangles.empty());
-    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
+    CHECK(trace.rectangles.size() == 1);
+    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1"}));
     f.ui.cancel();
     CHECK(g_ime->ends == 1 && g_imeTimer->stops == 1 && f.overview.damages == 1);
     g_editor = &f.ui;
@@ -981,6 +1072,7 @@ void panelCancellationClearsState() {
 }
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
+        {"registered theme defaults and real Pango fallback/weight", configuredThemeDefaults},
         {"default names, visibility and submission order", defaultsAndOrdering},
         {"enabled/closing/dependency guards and cancellation", guardsAndCancellation},
         {"texture reuse, invalidation and eviction", cacheAndInvalidation},
@@ -992,12 +1084,12 @@ int main() {
         {"overlapping cards, selector identity and raster retry", overlappingCardsAndRetry},
         {"native prefix cache invalidation and measured editor budget", nativePrefixAndEditorBudget},
         {"long native names retain cursor space and UTF-8 boundaries", longNativePrefix},
-        {"empty/inactive/offscreen panels and transparent idle", emptyPanelAndGuards},
+        {"empty/inactive/offscreen panels and themed idle", emptyPanelAndGuards},
         {"popup composition, Chinese candidates, hitboxes and paint order", panelCompositionCandidatesAndOrder},
         {"popup caret respects UTF-8 byte boundaries", panelCaretBoundaries},
         {"popup screen bounds, fractional scale and row clipping", panelScreenBoundsAndClipping},
         {"popup texture cache, selection, alpha and raster retry", panelCacheAlphaAndRetry},
-        {"actual cancellation clears popup and restores transparent idle", panelCancellationClearsState},
+        {"actual cancellation clears popup and restores themed idle", panelCancellationClearsState},
     };
     int failures = 0;
     for (const auto& [name, test] : tests) {

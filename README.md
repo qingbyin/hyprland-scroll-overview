@@ -90,7 +90,11 @@ This setting does not affect overview-origin drags with `toggle all` because eve
 
 ## Workspace titles
 
-Each workspace preview has a transparent, centered title bar with larger text.
+Each workspace preview has a centered title bar matching the Waybar theme:
+20px DejaVuSansM Nerd Font with FontAwesome 7 Free fallback, Semibold (600),
+`#A7AFD5` text, and a `rgba(30, 30, 46, 0.8)` background. Font and size remain
+configurable. The edit underline is green (`#16a085`), or red (`#f7768e`) after
+a failed save. The background, text and underline fade with the workspace.
 The bar is shifted upward by 12 logical pixels for more distance from window
 content; `titles:offset` adjusts this shift, and 0 restores its original position.
 The native workspace name and editable title are separated by four spaces.

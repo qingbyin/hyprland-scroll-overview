@@ -1,21 +1,24 @@
 # Workspace titles
 
-Each preview has a transparent title bar near its upper edge. By default,
-the bar is shifted upward by 12 logical pixels to separate it from window
-content without moving or resizing the windows. The native workspace name
-or number and the custom title are centered together, with
-four spaces between them. Without a custom title, only the native label is
-shown. A custom title changes only ScrollOverview's display: Hyprland workspace
-3 remains workspace 3, including its native name, dispatchers, rules, and
-external workspace indicators.
+Each preview has a centered title bar near its upper edge, with a
+`rgba(30, 30, 46, 0.8)` background and `#A7AFD5` text matching the Waybar theme.
+The default font is DejaVuSansM Nerd Font with FontAwesome 7 Free as fallback,
+at Semibold weight (600) and 20 logical pixels. The bar is shifted upward by
+12 logical pixels to separate it from window content without moving or
+resizing the windows. The native workspace name or number and the custom
+title are centered together, with four spaces between them. Without a custom
+title, only the native label is shown. A custom title changes only
+ScrollOverview's display: Hyprland workspace 3 remains workspace 3, including
+its native name, dispatchers, rules, and external workspace indicators.
 
 The bar uses the existing workspace preview box in both horizontal and
 vertical layouts. Its height, upward offset and text follow the monitor scale.
 The offset does not reserve space between cards: `workspace_gap = 0` is still
 supported, but larger offsets can overlap the preceding preview in vertical
-layouts. Titles outside the monitor are clipped rather than moved back. All title
-bars are drawn after the window previews, including overflowing, dragged,
-and pinned windows. Top/overlay layer surfaces remain above the title bars.
+layouts. Titles outside the monitor are clipped rather than moved back.
+All title bars are drawn after the window previews, including overflowing,
+dragged, and pinned windows. Top/overlay layer surfaces remain above the
+title bars.
 
 ## Editing
 
@@ -24,8 +27,11 @@ button follows the overview's left-handed setting. The insertion point is
 shown as a vertical bar. Long text is cropped around that insertion point.
 The native name is read-only; editing a workspace without an existing custom
 title starts with an empty draft. Long native names are shortened while editing
-to leave room for the cursor. A thin blue underline indicates the active editor;
-the title itself has no filled background.
+to leave room for the cursor. A thin green (`#16a085`) underline indicates
+the active editor; a failed save changes it to red (`#f7768e`). The title
+background remains visible both while editing and when idle. Its 0.8 opacity
+is multiplied by the workspace overview alpha; text and underlines use the
+workspace overview alpha directly, so all parts fade with the preview.
 
 - Enter or keypad Enter saves the title.
 - Escape cancels without saving.
@@ -61,9 +67,10 @@ composition does not prematurely save or discard the title.
 The popup is rendered by the plugin using Fcitx's client-side input-panel API.
 The overview is compositor-owned and has no application surface to which a
 native Wayland input-method popup could attach. The candidate popup has its
-own background for readability; the title bar remains transparent. The popup
-uses the title font, not Fcitx's native popup theme. No clipboard, external
-text-entry application, or shell command is involved.
+own background and selection colors for readability, separate from the title
+bar's background. The popup uses the configured title font and weight, not
+Fcitx's native popup theme. No clipboard, external text-entry application,
+or shell command is involved.
 
 Fcitx key processing is asynchronous and ordered, with a one-second timeout.
 Without Fcitx, direct XKB input remains available. After a connection failure,
@@ -86,14 +93,23 @@ plugin {
     scrolloverview {
         titles {
             enabled = true
-            font = sans-serif
-            font_size = 22
+            font = DejaVuSansM Nerd Font,FontAwesome 7 Free Semibold
+            font_size = 20
             height = 40
             offset = 12
         }
     }
 }
 ```
+
+`font` accepts a Pango font description, not a CSS font-family declaration.
+Separate fallback families with commas, without quoting individual families,
+and put the weight after the family list. The default description above
+parses as two families with weight 600. Custom descriptions such as
+`Noto Sans CJK SC` or `Noto Sans CJK SC Bold` retain their own weight; the
+renderer does not force Semibold on user overrides. The theme colors are
+fixed, while the existing font, size, height and offset options remain
+configurable.
 
 `font_size` is the logical pixel font size, from 6 to 64. `height` is the
 logical pixel bar height, from 16 to 128. Text is reduced when necessary to
@@ -174,9 +190,10 @@ rename it over the destination. A malformed existing file is not overwritten.
 Simultaneous writers from separate compositor processes are not supported.
 
 A failed interactive save keeps the editor and its draft open, colors the
-underline red, and displays an error notification. If rename succeeded but directory
-synchronization failed, the error explicitly says the file was replaced;
-the in-memory store then reflects that file, without claiming durable success.
+underline red (`#f7768e`), and displays an error notification. If rename
+succeeded but directory synchronization failed, the error explicitly says
+the file was replaced; the in-memory store then reflects that file, without
+claiming durable success.
 Escape can discard the remaining draft, or Enter can retry saving it.
 
 ## Developer integration and validation
@@ -225,10 +242,14 @@ change the current desktop.
 The rendering regression test compiles the actual `titleBox()`, `render()`,
 and `flushPass()` method bodies against lightweight substitute dependencies.
 It also extracts the real input-panel renderer and cancellation methods.
-It checks centered labels, transparent titles, edit underlines, prefix spacing,
+It checks registered font defaults, centered labels, title background/text
+colors, green/red edit underlines, alpha multiplication, prefix spacing,
 candidate popups and hitboxes, nonempty draw regions, flushing before overlays,
-clipping, scaling, configuration guards and texture caching. It does not test
-OpenGL, glyph pixels or Hyprland's occlusion logic.
+clipping, scaling, configuration guards and texture caching. It loads the
+system Pango library (`libpango-1.0.so.0`) to verify the fallback family list
+and weight, including custom font overrides; layout and DPI remain test
+substitutes. It does not test OpenGL, glyph pixels or Hyprland's occlusion
+logic.
 
 The IME tests use a fake Fcitx service on private D-Bus sessions. They require
 `dbus-run-session`, Python `dbus-python`, and PyGObject. Tests cover ordering,

@@ -425,6 +425,10 @@ void CWorkspaceTitleUI::render() {
     if (!enabled || m_overview.closing)
         return;
     const auto font = ScrollOverview::Config::getValue<std::string>("plugin:scrolloverview:titles:font", monitor);
+    auto* fontDescription = pango_font_description_from_string(font.c_str());
+    // CTextResource overrides the description's weight with its explicit field.
+    const auto fontWeight = pango_font_description_get_weight(fontDescription);
+    pango_font_description_free(fontDescription);
     const int configuredSize = std::clamp(ScrollOverview::Config::getValue<int>("plugin:scrolloverview:titles:font_size", monitor), 6, 64);
     std::unordered_set<std::string> live;
     auto& context = g_pHyprRenderer->context();
@@ -440,9 +444,12 @@ void CWorkspaceTitleUI::render() {
         if (bar.width <= 0 || bar.height <= 0 || !bar.overlaps(screen))
             continue;
         const float alpha = m_overview.workspaceOverviewAlpha(i);
+        pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
+            .box = bar, .color = CHyprColor{30.F / 255.F, 30.F / 255.F, 46.F / 255.F, 0.8F * alpha}}));
         const bool active = editing() && selector == m_selector;
         if (active) {
-            const auto color = m_saveFailed ? CHyprColor{0.85F, 0.20F, 0.15F, alpha} : CHyprColor{0.30F, 0.65F, 0.90F, alpha};
+            const auto color = m_saveFailed ? CHyprColor{247.F / 255.F, 118.F / 255.F, 142.F / 255.F, alpha} :
+                                             CHyprColor{22.F / 255.F, 160.F / 255.F, 133.F / 255.F, alpha};
             const double thickness = std::min(bar.height, std::max(1.0, static_cast<double>(monitor->m_scale)));
             pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
                 .box = CBox{bar.x, bar.y + bar.height - thickness, bar.width, thickness}, .color = color}));
@@ -514,6 +521,8 @@ void CWorkspaceTitleUI::render() {
             data.text = text;
             data.font = font;
             data.fontSize = fontSize;
+            data.weight = fontWeight;
+            data.color = Hyprgraphics::CColor{Hyprgraphics::CColor::SSRGB{167.0 / 255.0, 175.0 / 255.0, 213.0 / 255.0}};
             data.maxSize = Vector2D{static_cast<double>(width), bar.height};
             data.wrap = false;
             data.ellipsize = true;
@@ -597,6 +606,9 @@ void CWorkspaceTitleUI::renderInputPanel() {
     pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
         .box = m_panelBox, .color = CHyprColor{0.10F, 0.13F, 0.18F, 0.98F * alpha}}));
     const auto font = ScrollOverview::Config::getValue<std::string>("plugin:scrolloverview:titles:font", monitor);
+    auto* fontDescription = pango_font_description_from_string(font.c_str());
+    const auto fontWeight = pango_font_description_get_weight(fontDescription);
+    pango_font_description_free(fontDescription);
     const double dpi = pango_cairo_font_map_get_resolution(PANGO_CAIRO_FONT_MAP(pango_cairo_font_map_get_default()));
     const int fontSize = std::max(1, static_cast<int>(logicalFont * scale * 72.0 / (dpi > 0 ? dpi : 96.0)));
     const double textWidth = width - 2 * padding;
@@ -619,6 +631,7 @@ void CWorkspaceTitleUI::renderInputPanel() {
             data.text = text;
             data.font = font;
             data.fontSize = fontSize;
+            data.weight = fontWeight;
             data.maxSize = Vector2D{textWidth, rowHeight};
             data.wrap = false;
             data.ellipsize = true;
