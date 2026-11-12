@@ -424,6 +424,8 @@ static void defineConfigValues() {
     addValue(makeShared<CIntValue>("plugin:scrolloverview:workspace_gap", "gap between overview workspaces", 0, SIntValueOptions{.min = 0}));
     addValue(makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", Hyprlang::STRING{"vertical"}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:titles:enabled", "show editable plugin-private workspace titles", true));
+    addValue(makeShared<CStringValue>("plugin:scrolloverview:titles:format", "workspace title format: $workspace is the native name, $title is the custom title",
+                                      Hyprlang::STRING{"$workspace    $title"}));
     addValue(makeShared<CStringValue>("plugin:scrolloverview:titles:font", "workspace title Pango font description",
                                       Hyprlang::STRING{"DejaVuSansM Nerd Font,FontAwesome 7 Free Semibold"}));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:font_size", "workspace title font size in logical pixels", 20,

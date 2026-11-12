@@ -12,6 +12,10 @@ namespace WorkspaceTitles {
     // DEL, and Unicode line separators U+0085, U+2028, U+2029.
     bool validTitle(std::string_view title);
 
+    // Single-pass plain-text expansion of $workspace and $title. $$ is literal
+    // '$'; unknown identifiers are preserved. Trim only outer ASCII spaces.
+    std::string formatTitle(std::string_view format, std::string_view workspace, std::string_view title);
+
     class Editor {
       public:
         std::string text;

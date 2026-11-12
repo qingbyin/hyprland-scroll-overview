@@ -310,6 +310,41 @@ namespace WorkspaceTitles {
         }
     }
 
+    std::string formatTitle(std::string_view format, std::string_view workspace, std::string_view title) {
+        std::string result;
+        for (std::size_t at = 0; at < format.size();) {
+            if (format[at] != '$') {
+                result += format[at++];
+                continue;
+            }
+            const auto start = at++;
+            if (at < format.size() && format[at] == '$') {
+                result += '$';
+                ++at;
+                continue;
+            }
+            // Consume a whole identifier, so $title_suffix stays literal.
+            while (at < format.size()) {
+                const auto c = format[at];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
+                    break;
+                ++at;
+            }
+            const auto token = format.substr(start, at - start);
+            if (token == "$workspace")
+                result += workspace;
+            else if (token == "$title")
+                result += title;
+            else
+                result += token;
+        }
+        // Empty titles should not leave the default separator off-center.
+        const auto first = result.find_first_not_of(' ');
+        if (first == std::string::npos)
+            return {};
+        return result.substr(first, result.find_last_not_of(' ') - first + 1);
+    }
+
     bool validTitle(std::string_view title) {
         if (title.size() > MAX_TITLE)
             return false;

@@ -80,6 +80,10 @@ def extract(path, signature):
 
 parts = [
     "// Generated from production sources; no method-body substitutions.",
+    "namespace WorkspaceTitles {",
+    extract(root / "WorkspaceTitles.cpp",
+            "    std::string formatTitle(std::string_view format, std::string_view workspace, std::string_view title)"),
+    "}",
     "namespace OverviewRender {",
     extract(root / "OverviewRender.cpp",
             "void flushPass(Render::CRenderContext& ctx, PHLMONITOR monitor)"),

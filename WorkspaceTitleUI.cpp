@@ -429,6 +429,7 @@ void CWorkspaceTitleUI::render() {
     // CTextResource overrides the description's weight with its explicit field.
     const auto fontWeight = pango_font_description_get_weight(fontDescription);
     pango_font_description_free(fontDescription);
+    const auto format = ScrollOverview::Config::getValue<std::string>("plugin:scrolloverview:titles:format", monitor);
     const int configuredSize = std::clamp(ScrollOverview::Config::getValue<int>("plugin:scrolloverview:titles:font_size", monitor), 6, 64);
     std::unordered_set<std::string> live;
     auto& context = g_pHyprRenderer->context();
@@ -461,10 +462,10 @@ void CWorkspaceTitleUI::render() {
             continue;
         const auto nativeName = workspace->displayName();
         auto text = active ? m_editor.text : g_store->get(selector);
-        // Length-delimit the native name so custom titles cannot collide with it.
-        // Check the cache before either prefix measurement or rasterization.
-        const auto signature = std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}", width, fontSize, font.size(), font, active,
-                                           active ? m_editor.cursor : 0, nativeName.size(), nativeName, text);
+        // Length-delimit fields so names, templates and titles cannot collide.
+        // Check the cache before expansion, prefix measurement or rasterization.
+        const auto signature = std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", width, fontSize, font.size(), font, active,
+                                           active ? m_editor.cursor : 0, nativeName.size(), nativeName, format.size(), format, text);
         auto& cached = m_textures[selector];
         if (signature != cached.signature || !cached.texture) {
             if (active) {
@@ -514,7 +515,12 @@ void CWorkspaceTitleUI::render() {
                 g_object_unref(pangoContext);
                 text = prefix + editorDisplay(m_editor, std::max(1, width - prefixWidth), fontSize, font);
             } else
-                text = text.empty() ? nativeName : nativeName + "    " + text;
+                text = WorkspaceTitles::formatTitle(format, nativeName, text);
+            if (text.empty()) {
+                cached.texture.reset();
+                cached.signature = signature;
+                continue;
+            }
             Hyprgraphics::CTextResource::STextResourceData data;
             data.text = text;
             data.font = font;

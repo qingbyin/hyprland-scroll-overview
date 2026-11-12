@@ -663,11 +663,36 @@ namespace {
     }
 }
 
+void testFormat() {
+    using WorkspaceTitles::formatTitle;
+    CHECK(formatTitle("$workspace    $title", "1", "开发") == "1    开发");
+    CHECK(formatTitle("$workspace    $title", "命名工作区", "") == "命名工作区");
+    CHECK(formatTitle("$workspace   $title", "3", "开发") == "3   开发");
+    CHECK(formatTitle("$workspace   $title", "3", "") == "3 ");
+    CHECK(formatTitle("$title / $workspace / $title", "3", "开发") == "开发 / 3 / 开发");
+    CHECK(formatTitle("$title", "3", "开发") == "开发");
+    CHECK(formatTitle("$workspace", "3", "开发") == "3");
+    CHECK(formatTitle("literal ", "3", "开发") == "literal ");
+    CHECK(formatTitle("", "3", "开发").empty());
+    CHECK(formatTitle(" $title ", "3", "").empty());
+    CHECK(formatTitle("   ", "3", "开发").empty());
+    CHECK(formatTitle("  $workspace  /  $title  ", "3", "开发") == "3  /  开发");
+    CHECK(formatTitle("$$workspace $$title $$$title $", "3", "开发") == "$workspace $title $开发 $");
+    CHECK(formatTitle("$unknown $title_suffix $workspace2 ${title}", "3", "开发") ==
+          "$unknown $title_suffix $workspace2 ${title}");
+    CHECK(formatTitle("$title$workspace", "3", "开发") == "开发3");
+    CHECK(formatTitle("$workspace中文$title", "3", "开发") == "3中文开发");
+    CHECK(formatTitle("$workspace / $title", "$title", "$workspace") == "$title / $workspace");
+    CHECK(formatTitle("[$title]", "3", "<b>开发</b>") == "[<b>开发</b>]");
+    CHECK(formatTitle("$title$title", "3", std::string(4096, 'x')) == std::string(8192, 'x'));
+}
+
 int main(int argc, char** argv) {
     try {
         CHECK(argc == 2);
         const auto root = fs::absolute(argv[1]);
         CHECK(fs::is_directory(root));
+        testFormat();
         testValidation();
         testEditor();
         testRandomEditor();

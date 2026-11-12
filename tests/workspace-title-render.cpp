@@ -72,6 +72,7 @@ struct Settings {
     bool enabled = true;
     int height = 40, fontSize = 20, offset = 12;
     std::string font = "DejaVuSansM Nerd Font,FontAwesome 7 Free Semibold";
+    std::string format = "$workspace    $title";
 };
 struct Monitor {
     double m_scale = 1;
@@ -98,6 +99,8 @@ namespace ScrollOverview::Config {
             return s.fontSize;
         } else {
             static_assert(std::is_same_v<T, std::string>);
+            if (key == "plugin:scrolloverview:titles:format")
+                return s.format;
             CHECK(key == "plugin:scrolloverview:titles:font");
             return s.font;
         }
@@ -417,6 +420,8 @@ void configuredThemeDefaults() {
         CHECK(end != std::string::npos);
         return source.substr(begin, end - begin);
     };
+    const auto format = registration("plugin:scrolloverview:titles:format");
+    CHECK(format.contains("Hyprlang::STRING{\"" + Settings{}.format + "\"}"));
     const auto font = registration("plugin:scrolloverview:titles:font");
     CHECK(font.contains("Hyprlang::STRING{\"" + Settings{}.font + "\"}"));
     auto* description = pango_font_description_from_string(Settings{}.font.c_str());
@@ -527,6 +532,57 @@ void cacheAndInvalidation() {
     f.render();
     CHECK(trace.raster.size() == 8 && trace.raster.back().font == "Other Font");
     CHECK(trace.raster.back().weight == 400); // No forced Semibold on user fonts.
+}
+void formattedLabelsAndCache() {
+    Fixture f;
+    g_store->values["1"] = "开发";
+    f.monitor->settings.format = "$workspace   $title";
+    f.render();
+    CHECK(trace.raster.back().text == "1   开发");
+    CHECK(trace.rectangles.empty());
+    const auto first = f.ui.m_textures.at("1").texture;
+    f.render();
+    CHECK(trace.raster.size() == 1 && f.ui.m_textures.at("1").texture == first);
+    f.monitor->settings.format = "$title / $workspace / $title";
+    f.render();
+    CHECK(trace.raster.size() == 2 && trace.raster.back().text == "开发 / 1 / 开发");
+    f.overview.images[0]->pWorkspace->name = "中文";
+    f.render();
+    CHECK(trace.raster.back().text == "开发 / 中文 / 开发");
+    f.monitor->settings.format = "$workspace   $title";
+    g_store->values.erase("1");
+    f.render();
+    CHECK(trace.raster.back().text == "中文 "); // Literal icons are not conditional.
+    f.monitor->settings.format = "$title";
+    trace = {};
+    f.render();
+    CHECK(trace.raster.empty() && trace.submitted.empty());
+    CHECK(!f.ui.m_textures.at("1").texture); // No stale text when output becomes empty.
+    CHECK(!f.ui.titleBox(0).empty()); // Invisible text retains its editing hitbox.
+    f.monitor->settings.format = "";
+    g_store->values["1"] = "Saved";
+    f.render();
+    CHECK(trace.raster.empty() && trace.submitted.empty());
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_editor = {"Draft", 2};
+    f.render();
+    CHECK(trace.raster.back().text == "中文    Dr|aft"); // Editor does not use the template.
+    f.ui.cancel();
+    trace = {};
+    f.render();
+    CHECK(trace.submitted.empty());
+    f.monitor->settings.format = "$title";
+    f.render();
+    CHECK(trace.raster.back().text == "Saved");
+    const auto bar = f.ui.titleBox(0);
+    const auto size = trace.textures.back().tex->m_size;
+    CHECK(trace.textures.back().box.x == bar.x + (bar.width - size.x) / 2);
+    // A second monitor's settings do not inherit the first monitor's template.
+    auto other = std::make_shared<Monitor>();
+    f.overview.pMonitor = other;
+    f.render();
+    CHECK(trace.raster.back().text == "中文    Saved");
 }
 void editingAndAlpha() {
     Fixture f;
@@ -1070,6 +1126,7 @@ int main() {
         {"default names, visibility and submission order", defaultsAndOrdering},
         {"enabled/closing/dependency guards and cancellation", guardsAndCancellation},
         {"texture reuse, invalidation and eviction", cacheAndInvalidation},
+        {"formatted labels, empty output, editor and per-monitor cache", formattedLabelsAndCache},
         {"editing, cursor cache, save failure and alpha", editingAndAlpha},
         {"clipped and offscreen title bars", clippingAndOffscreen},
         {"narrow bars still flush; short previews", narrowAndSmallBars},
