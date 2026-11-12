@@ -444,8 +444,6 @@ void CWorkspaceTitleUI::render() {
         if (bar.width <= 0 || bar.height <= 0 || !bar.overlaps(screen))
             continue;
         const float alpha = m_overview.workspaceOverviewAlpha(i);
-        pass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
-            .box = bar, .color = CHyprColor{30.F / 255.F, 30.F / 255.F, 46.F / 255.F, 0.8F * alpha}}));
         const bool active = editing() && selector == m_selector;
         if (active) {
             const auto color = m_saveFailed ? CHyprColor{247.F / 255.F, 118.F / 255.F, 142.F / 255.F, alpha} :

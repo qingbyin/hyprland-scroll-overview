@@ -436,7 +436,7 @@ void defaultsAndOrdering() {
         .box = {0, 0, 800, 600}, .color = {1, 0, 0, 1}}));
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{
-        "rect", "rect", "text:1", "rect", "text:Development"}));
+        "rect", "text:1", "text:Development"}));
     CHECK(trace.flushes == 1 && trace.clears == 1);
     CHECK(sameBox(trace.damage.front().box, {0, 0, 800, 600}));
     CHECK(trace.events.at(trace.events.size() - 2) == "flush");
@@ -449,11 +449,8 @@ void defaultsAndOrdering() {
     CHECK(rgb.r == 167.0 / 255.0 && rgb.g == 175.0 / 255.0 && rgb.b == 213.0 / 255.0);
     CHECK(!trace.raster[0].wrap && trace.raster[0].ellipsize);
     CHECK(sameBox(f.ui.titleBox(0), {100, 100, 300, 40}));
-    CHECK(trace.rectangles.size() == 3); // Preview, then one fill per title.
-    for (size_t i = 1; i < trace.rectangles.size(); ++i) {
-        CHECK(sameBox(trace.rectangles[i].box, f.ui.titleBox(i - 1)));
-        CHECK(sameColor(trace.rectangles[i].color, 30, 30, 46, 0.8F));
-    }
+    CHECK(trace.rectangles.size() == 1); // Only the preview; title backgrounds are transparent.
+    CHECK(sameColor(trace.rectangles.front().color, 255, 0, 0, 1.F));
     CHECK(trace.raster[0].fontSize == 15); // 20 logical px converted to integer points.
     CHECK(topAt(250, 120) == "text:1");
     CHECK(topAt(250, 370) == "text:Development");
@@ -499,7 +496,7 @@ void cacheAndInvalidation() {
     const auto first = f.ui.m_textures.at("1").texture;
     f.render();
     CHECK(trace.raster.size() == 1 && f.ui.m_textures.at("1").texture == first);
-    CHECK(trace.flushes == 2 && trace.submitted.size() == 4);
+    CHECK(trace.flushes == 2 && trace.submitted.size() == 2);
     f.overview.previews[0].x += 10;
     f.render();
     CHECK(trace.raster.size() == 1); // Translation alone does not rerasterize.
@@ -540,9 +537,7 @@ void editingAndAlpha() {
     f.render();
     CHECK(trace.raster.back().text == "1    Dr|aft");
     CHECK(trace.textures.back().a == 0.5F);
-    CHECK(trace.rectangles.size() == 2);
-    CHECK(sameColor(trace.rectangles.front().color, 30, 30, 46, 0.4F));
-    CHECK(sameBox(trace.rectangles.front().box, f.ui.titleBox(0)));
+    CHECK(trace.rectangles.size() == 1);
     CHECK(sameColor(trace.rectangles.back().color, 22, 160, 133, 0.5F));
     CHECK(trace.raster.back().weight == 600);
     const auto rgb = trace.raster.back().color.asRgb();
@@ -550,7 +545,7 @@ void editingAndAlpha() {
     CHECK(sameBox(trace.rectangles.back().box, {100, 139, 300, 1}));
     const auto size = trace.textures.back().tex->m_size;
     CHECK(trace.textures.back().box.x == 100 + (300 - size.x) / 2);
-    CHECK(topAt(101, 101) == "rect");
+    CHECK(topAt(101, 101).empty());
     f.ui.m_editor.cursor = 3;
     f.render();
     CHECK(trace.raster.size() == 2 && trace.raster.back().text == "1    Dra|ft");
@@ -575,9 +570,9 @@ void clippingAndOffscreen() {
     // Deliberately oversized raster output: clipBox must still constrain paint.
     trace.oversizedTexture = true;
     f.render();
-    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1"}));
+    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
     CHECK(sameBox(trace.textures[0].clipBox, {-50, -10, 200, 40}));
-    CHECK(trace.rectangles.size() == 1);
+    CHECK(trace.rectangles.size() == 0);
     CHECK(!trace.painted[0].box.empty());
     for (const auto& p : trace.painted)
         CHECK(sameBox(intersect(p.box, {0, 0, 150, 30}), p.box));
@@ -593,10 +588,10 @@ void narrowAndSmallBars() {
     g_editor = &f.ui;
     f.ui.m_selector = "1";
     f.render();
-    CHECK((trace.submitted == std::vector<std::string>{"rect", "rect"}));
+    CHECK((trace.submitted == std::vector<std::string>{"rect"}));
     CHECK(trace.raster.empty() && trace.flushes == 1);
     CHECK(sameBox(trace.rectangles.back().box, {100, 139, 20, 1}));
-    CHECK(topAt(105, 105) == "rect"); // Background survives a skipped text raster.
+    CHECK(topAt(105, 105).empty()); // Skipped text still leaves a transparent bar.
     CHECK(topAt(105, 139) == "rect"); // Early text-skip still flushes the underline.
     f.overview.previews[0] = {100, 100, 200, 8};
     f.render();
@@ -618,7 +613,7 @@ void scalingAndBounds() {
         CHECK(trace.raster.back().fontSize == static_cast<int>(20 * scale * 0.75));
         const auto size = trace.textures.back().tex->m_size;
         CHECK(trace.textures.back().box.x == bar.x + (bar.width - size.x) / 2);
-        CHECK(trace.rectangles.size() == 1);
+        CHECK(trace.rectangles.size() == 0);
         CHECK(trace.textures.back().box.y == bar.y + (bar.height - size.y) / 2);
         CHECK(sameBox(trace.damage.back().box, {0, 0, 800 * scale, 600 * scale}));
     }
@@ -657,8 +652,7 @@ void titleOffsetAndHitbox() {
         f.ui.m_inputPanel.preedit = "拼音";
         f.render();
         const auto bar = f.ui.titleBox(0);
-        CHECK(sameBox(trace.rectangles.front().box, bar));
-        CHECK(sameBox(trace.rectangles[1].box,
+        CHECK(sameBox(trace.rectangles[0].box,
             {bar.x, bar.y + bar.height - scale, bar.width, scale}));
         CHECK(sameBox(trace.textures.front().clipBox, bar));
         CHECK(f.ui.m_panelBox.y == bar.y + bar.height + 4 * scale);
@@ -679,7 +673,7 @@ void overlappingCardsAndRetry() {
     g_store->values["1"] = "Numbered one";
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{
-        "rect", "text:1    Numbered one", "rect", "text:Named one"}));
+        "text:1    Numbered one", "text:Named one"}));
     CHECK(topAt(250, 120) == "text:Named one");
     CHECK(f.ui.m_textures.size() == 2); // Numeric and named selectors stay distinct.
     f.ui.m_textures.clear();
@@ -697,7 +691,7 @@ void nativePrefixAndEditorBudget() {
     g_store->values["1"] = "Custom";
     f.render();
     CHECK(trace.raster.back().text == "1    Custom");
-    CHECK(trace.rectangles.size() == 1 && prefixMeasurements == 0);
+    CHECK(trace.rectangles.size() == 0 && prefixMeasurements == 0);
     const auto first = f.ui.m_textures.at("1").texture;
     const auto size = first->m_size;
     CHECK(trace.textures.back().box.x == 100 + (300 - size.x) / 2);
@@ -804,8 +798,8 @@ void emptyPanelAndGuards() {
     f.ui.m_inputPanel.preedit = "拼音";
     f.render(); // Inactive editors cannot show a stale composition panel.
     CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
-    CHECK(trace.rectangles.size() == 1);
-    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1"}));
+    CHECK(trace.rectangles.size() == 0);
+    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
     trace = {};
     g_editor = &f.ui;
     f.ui.m_selector = "1";
@@ -813,9 +807,9 @@ void emptyPanelAndGuards() {
     f.render();
     CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
     CHECK(f.ui.m_panelTextures.empty());
-    CHECK(trace.rectangles.size() == 2);
-    CHECK(sameBox(trace.rectangles[1].box, {100, 139, 300, 1}));
-    CHECK((trace.submitted == std::vector<std::string>{"rect", "rect", "text:1    |"}));
+    CHECK(trace.rectangles.size() == 1);
+    CHECK(sameBox(trace.rectangles[0].box, {100, 139, 300, 1}));
+    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1    |"}));
     f.ui.m_inputPanel.preedit = "拼音";
     f.render();
     CHECK(!f.ui.m_panelBox.empty());
@@ -845,15 +839,15 @@ void panelCompositionCandidatesAndOrder() {
     };
     f.render();
     CHECK((trace.submitted == std::vector<std::string>{
-        "rect", "rect", "text:1    |", "rect", "text:拼│音", "text:中文输入",
+        "rect", "text:1    |", "rect", "text:拼│音", "text:中文输入",
         "text:1  拼音", "rect", "text:2  中文", "text:‹  ›"}));
     CHECK(trace.flushes == 1 && trace.clears == 1);
     CHECK(trace.events[trace.events.size() - 2] == "flush");
     CHECK(trace.events.back() == "clear");
     CHECK(sameBox(f.ui.m_panelBox, {0, 144, 560, 180}));
-    CHECK(trace.rectangles.size() == 4); // Title, underline, popup, selected candidate.
-    CHECK(sameBox(trace.rectangles[2].box, f.ui.m_panelBox));
-    CHECK(trace.rectangles[2].color.a == 0.98F);
+    CHECK(trace.rectangles.size() == 3); // Underline, popup, selected candidate.
+    CHECK(sameBox(trace.rectangles[1].box, f.ui.m_panelBox));
+    CHECK(trace.rectangles[1].color.a == 0.98F);
     CHECK(f.ui.m_candidateBoxes.size() == 2);
     for (size_t i = 0; i < f.ui.m_candidateBoxes.size(); ++i) {
         const auto& [box, candidate] = f.ui.m_candidateBoxes[i];
@@ -867,10 +861,10 @@ void panelCompositionCandidatesAndOrder() {
         CHECK(!box.contains(20, 200)); // Auxiliary row is not a candidate.
         CHECK(!box.contains(20, 300)); // Paging indicators are not candidates.
     }
-    CHECK(sameBox(trace.rectangles[3].box, f.ui.m_candidateBoxes[1].first));
-    CHECK(trace.rectangles[3].color.r == 0.18F && trace.rectangles[3].color.b == 0.55F);
+    CHECK(sameBox(trace.rectangles[2].box, f.ui.m_candidateBoxes[1].first));
+    CHECK(trace.rectangles[2].color.r == 0.18F && trace.rectangles[2].color.b == 0.55F);
     CHECK(topAt(20, 270) == "text:2  中文");
-    CHECK(topAt(101, 101) == "rect"); // Title background remains independent of the popup.
+    CHECK(topAt(101, 101).empty()); // The popup does not fill the title background.
     for (size_t i = 1; i < trace.raster.size(); ++i) {
         CHECK(trace.raster[i].maxSize.x == 540 && trace.raster[i].maxSize.y == 32);
         CHECK(!trace.raster[i].wrap && trace.raster[i].ellipsize);
@@ -966,7 +960,7 @@ void panelScreenBoundsAndClipping() {
         trace = {};
         f.render();
         CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
-        CHECK(trace.rectangles.size() == 2); // Title and underline, no room for popup rows.
+        CHECK(trace.rectangles.size() == 1); // Underline only, no room for popup rows.
     }
 }
 void panelCacheAlphaAndRetry() {
@@ -978,9 +972,9 @@ void panelCacheAlphaAndRetry() {
     f.overview.alphas[0] = 0.5F;
     f.render();
     CHECK(trace.raster.size() == 3);
-    CHECK(sameColor(trace.rectangles[0].color, 30, 30, 46, 0.4F));
-    CHECK(std::abs(trace.rectangles[2].color.a - 0.49F) < 0.0001F);
-    CHECK(trace.rectangles[3].color.a == 0.5F);
+    CHECK(sameColor(trace.rectangles[0].color, 22, 160, 133, 0.5F));
+    CHECK(std::abs(trace.rectangles[1].color.a - 0.49F) < 0.0001F);
+    CHECK(trace.rectangles[2].color.a == 0.5F);
     for (const auto& texture : trace.textures)
         CHECK(texture.a == 0.5F);
     const auto first = f.ui.m_panelTextures[0].texture;
@@ -1033,7 +1027,7 @@ void panelCacheAlphaAndRetry() {
     trace = {};
     f.render();
     CHECK(f.ui.m_panelBox.empty() && f.ui.m_candidateBoxes.empty());
-    CHECK(trace.rectangles.size() == 2); // Title background and editor underline remain.
+    CHECK(trace.rectangles.size() == 1); // Only the editor underline remains.
 }
 void panelCancellationClearsState() {
     Fixture f;
@@ -1053,8 +1047,8 @@ void panelCancellationClearsState() {
     CHECK(g_ime->ends == 1 && g_imeTimer->stops == 1 && f.overview.damages == 1);
     trace = {};
     f.render();
-    CHECK(trace.rectangles.size() == 1);
-    CHECK((trace.submitted == std::vector<std::string>{"rect", "text:1"}));
+    CHECK(trace.rectangles.size() == 0);
+    CHECK((trace.submitted == std::vector<std::string>{"text:1"}));
     f.ui.cancel();
     CHECK(g_ime->ends == 1 && g_imeTimer->stops == 1 && f.overview.damages == 1);
     g_editor = &f.ui;
