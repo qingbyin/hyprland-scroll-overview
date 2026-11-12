@@ -92,11 +92,14 @@ This setting does not affect overview-origin drags with `toggle all` because eve
 
 Each workspace preview has a centered title bar with Waybar-themed text:
 20px DejaVuSansM Nerd Font with FontAwesome 7 Free fallback, Semibold (600),
-and `#A7AFD5` text. Font and size remain configurable. The title bar is fully
-transparent: neither normal display nor editing draws a background fill.
+and `#A7AFD5` text by default. Font, size and text color are configurable
+through `titles:font`, `titles:font_size` and `titles:color`.
+The title bar is fully transparent: neither normal display nor editing draws
+a background fill.
 The edit underline is green (`#16a085`), or red (`#f7768e`) after a failed
-save. Text and underlines fade with the workspace. The IME candidate popup
-keeps its own background for readability.
+save. Text opacity is multiplied by the workspace fade; underlines also
+fade with the workspace. The IME candidate popup keeps its own background
+for readability.
 The bar is shifted upward by 12 logical pixels for more distance from window
 content; `titles:offset` adjusts this shift, and 0 restores its original position.
 
@@ -115,7 +118,13 @@ Hyprlang, without string quotes or escaping:
 
 ```ini
 format = $workspace   $title
+color = rgba(a7afd5ff)
 ```
+
+`color` accepts Hyprland colors such as `rgb(ffcc66)` or `rgba(ffcc6680)`.
+The latter uses approximately 50% opacity; the default `rgba(a7afd5ff)` is
+opaque. It affects normal and editing text, not the edit underline or the
+input-method popup. The title background remains transparent.
 
 Do not define Hyprlang configuration variables named `$workspace` or
 `$title`, since Hyprlang substitutes them before the plugin sees the format.
@@ -125,7 +134,10 @@ options globally or per monitor:
 ```lua
 hl.plugin.scrolloverview.configure({
     output = "DP-1", -- omit for global settings
-    titles = { format = "$workspace   $title" },
+    titles = {
+        format = "$workspace   $title",
+        color = "rgba(a7afd5ff)",
+    },
 })
 ```
 

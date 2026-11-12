@@ -1,8 +1,9 @@
 # Workspace titles
 
 Each preview has a centered title bar near its upper edge, with `#A7AFD5`
-text matching the Waybar theme. The bar is fully transparent: neither normal
-display nor editing draws a background fill. The default font is DejaVuSansM
+text by default, configurable through `titles:color`.
+The bar is fully transparent: neither normal display nor editing draws a
+background fill. The default font is DejaVuSansM
 Nerd Font with FontAwesome 7 Free as fallback, at Semibold weight (600) and
 20 logical pixels. The bar is shifted upward by 12 logical pixels to separate
 it from window content without moving or resizing the windows.
@@ -36,8 +37,8 @@ workspace without an existing custom title starts with an empty draft.
 Long native names are shortened while editing to leave room for the cursor.
 A thin green (`#16a085`) underline indicates the active editor; a failed save
 changes it to red (`#f7768e`). No title-bar background fill is drawn in either
-state. Text and underlines use the workspace overview alpha directly, so
-they fade with the preview.
+state. The configured text opacity is multiplied by the workspace overview
+alpha; underlines use the overview alpha directly. Both fade with the preview.
 
 - Enter or keypad Enter saves the title.
 - Escape cancels without saving.
@@ -103,6 +104,7 @@ plugin {
             format = $workspace    $title
             font = DejaVuSansM Nerd Font,FontAwesome 7 Free Semibold
             font_size = 20
+            color = rgba(a7afd5ff)
             height = 40
             offset = 12
         }
@@ -115,9 +117,22 @@ Separate fallback families with commas, without quoting individual families,
 and put the weight after the family list. The default description above
 parses as two families with weight 600. Custom descriptions such as
 `Noto Sans CJK SC` or `Noto Sans CJK SC Bold` retain their own weight; the
-renderer does not force Semibold on user overrides. The text and underline
-colors are fixed; the title bar has no background fill. The font, size, height
-and offset options remain configurable.
+renderer does not force Semibold on user overrides. The underline colors
+remain fixed; the title bar has no background fill.
+
+`color` controls all title-bar text, including the workspace name, custom
+title, literal icons, and the draft and insertion cursor while editing.
+It accepts Hyprland color syntax: `rgb(ffcc66)` is opaque, while
+`rgba(ffcc6680)` uses approximately 50% opacity. The default is
+`rgba(a7afd5ff)` (`#A7AFD5`, fully opaque). The eight hexadecimal digits in
+`rgba(...)` are red, green, blue, then alpha; `00` is transparent and `ff`
+is opaque. The configured opacity is multiplied by the workspace overview
+fade. Changing RGB refreshes the text texture; changing only opacity reuses
+it. Fully transparent text still leaves the title area clickable.
+
+The color applies globally or per monitor through Lua, like the other title
+options. It does not change edit underlines or the input-method popup's text,
+background, or selection colors.
 
 `font_size` is the logical pixel font size, from 6 to 64. `height` is the
 logical pixel bar height, from 16 to 128. Text is reduced when necessary to
@@ -187,6 +202,7 @@ hl.plugin.scrolloverview.configure({
         format = "$workspace   $title",
         font = "Noto Sans CJK SC",
         font_size = 22,
+        color = "rgba(ffcc66ff)",
         height = 40,
         offset = 12,
     },
@@ -300,12 +316,14 @@ failures. They do not start Hyprland or change the current desktop.
 The rendering regression test compiles the actual `titleBox()`, `render()`,
 and `flushPass()` method bodies against lightweight substitute dependencies.
 It also extracts the real input-panel renderer and cancellation methods.
-It checks registered font and format defaults, formatted and centered labels,
-transparent title backgrounds, text color, green/red edit underlines, alpha
-multiplication, prefix spacing, candidate popups and hitboxes, nonempty draw
+It checks registered font, format and color defaults, formatted and centered
+labels, transparent title backgrounds, configurable text color and opacity,
+RGB cache invalidation, alpha-only texture reuse, green/red edit underlines,
+alpha multiplication, prefix spacing, candidate popups and hitboxes, nonempty draw
 regions, flushing before overlays, clipping, scaling, configuration guards,
-empty formats, per-monitor formats and texture caching. It loads the system
-Pango library (`libpango-1.0.so.0`) to verify the fallback family list
+empty formats, per-monitor formats and colors, and texture caching.
+It loads the system Pango library (`libpango-1.0.so.0`) to verify the fallback
+family list
 and weight, including custom font overrides; layout and DPI remain test
 substitutes. It does not test OpenGL, glyph pixels or Hyprland's occlusion
 logic.
