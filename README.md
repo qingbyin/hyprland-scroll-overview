@@ -91,6 +91,8 @@ This setting does not affect overview-origin drags with `toggle all` because eve
 ## Workspace titles
 
 Each workspace preview has a transparent, centered title bar with larger text.
+The bar is shifted upward by 12 logical pixels for more distance from window
+content; `titles:offset` adjusts this shift, and 0 restores its original position.
 The native workspace name and editable title are separated by four spaces.
 Click to edit, press Enter to save, or Escape to cancel. Fcitx5 composition and
 candidate selection support Chinese input. Titles belong only to ScrollOverview:

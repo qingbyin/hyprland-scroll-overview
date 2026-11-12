@@ -1,15 +1,19 @@
 # Workspace titles
 
-Each preview has a transparent title bar inside its upper edge. The native
-workspace name or number and the custom title are centered together, with
+Each preview has a transparent title bar near its upper edge. By default,
+the bar is shifted upward by 12 logical pixels to separate it from window
+content without moving or resizing the windows. The native workspace name
+or number and the custom title are centered together, with
 four spaces between them. Without a custom title, only the native label is
 shown. A custom title changes only ScrollOverview's display: Hyprland workspace
 3 remains workspace 3, including its native name, dispatchers, rules, and
 external workspace indicators.
 
 The bar uses the existing workspace preview box in both horizontal and
-vertical layouts. Its height and text follow the monitor scale. It does not
-require space between cards, so `workspace_gap = 0` is supported. All title
+vertical layouts. Its height, upward offset and text follow the monitor scale.
+The offset does not reserve space between cards: `workspace_gap = 0` is still
+supported, but larger offsets can overlap the preceding preview in vertical
+layouts. Titles outside the monitor are clipped rather than moved back. All title
 bars are drawn after the window previews, including overflowing, dragged,
 and pinned windows. Top/overlay layer surfaces remain above the title bars.
 
@@ -85,6 +89,7 @@ plugin {
             font = sans-serif
             font_size = 22
             height = 40
+            offset = 12
         }
     }
 }
@@ -92,7 +97,12 @@ plugin {
 
 `font_size` is the logical pixel font size, from 6 to 64. `height` is the
 logical pixel bar height, from 16 to 128. Text is reduced when necessary to
-fit a smaller bar. Disabling titles also cancels an active title edit.
+fit a smaller bar. `offset` shifts the entire bar upward from the preview's
+top edge, from 0 to 128 logical pixels; 0 restores the original position.
+It is a position adjustment, not a guaranteed gap from every window, since
+window positions and decorations vary. The clickable editing area and input
+method popup follow the shifted bar. Disabling titles also cancels an active
+title edit.
 
 The same options can be set globally or per monitor using Lua:
 
@@ -104,6 +114,7 @@ hl.plugin.scrolloverview.configure({
         font = "Noto Sans CJK SC",
         font_size = 22,
         height = 40,
+        offset = 12,
     },
 })
 ```
