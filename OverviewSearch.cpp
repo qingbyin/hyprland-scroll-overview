@@ -4,6 +4,7 @@
 #include "SearchInput.hpp"
 #include "scrollOverview.hpp"
 #include "WorkspaceTitleUI.hpp"
+#include "SearchUI.hpp"
 
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
@@ -73,9 +74,9 @@ std::string displayText(const std::string& input) {
 }
 
 void text(cairo_t* cr, const std::string& value, double x, double y,
-          double width, int size, bool muted = false) {
+          double width, int size, uint32_t color = SearchUI::TEXT) {
     auto* layout = pango_cairo_create_layout(cr);
-    auto* font = pango_font_description_from_string("Sans");
+    auto* font = pango_font_description_from_string(SearchUI::FONT);
     pango_font_description_set_absolute_size(font, size * PANGO_SCALE);
     pango_layout_set_font_description(layout, font);
     const auto clean = displayText(value);
@@ -83,7 +84,7 @@ void text(cairo_t* cr, const std::string& value, double x, double y,
     pango_layout_set_single_paragraph_mode(layout, true);
     pango_layout_set_width(layout, std::max(1, static_cast<int>(width)) * PANGO_SCALE);
     pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
-    cairo_set_source_rgb(cr, muted ? 0.64 : 0.94, muted ? 0.70 : 0.96, muted ? 0.79 : 0.99);
+    SearchUI::color(cr, color);
     cairo_move_to(cr, x, y);
     pango_cairo_show_layout(cr, layout);
     pango_font_description_free(font);
@@ -435,6 +436,10 @@ void COverviewSearch::key(const IKeyboard::SKeyEvent& event) {
     const bool control = xkb_state_mod_name_is_active(state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0;
     const bool alt = xkb_state_mod_name_is_active(state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0;
     const bool logo = xkb_state_mod_name_is_active(state, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0;
+    if (const int delta = SearchUI::controlSelectionDelta(sym, control, alt, logo)) {
+        moveSelection(delta);
+        return;
+    }
     switch (sym) {
         case XKB_KEY_Escape: cancel(); return;
         case XKB_KEY_Return:
@@ -523,17 +528,12 @@ void COverviewSearch::buildTexture() {
     auto* cr = cairo_create(surface);
     cairo_scale(cr, m_pixelScale, m_pixelScale);
     const double w = width / m_pixelScale;
-    cairo_set_source_rgba(cr, 0.035, 0.05, 0.08, 0.98);
-    cairo_paint(cr);
-    cairo_set_source_rgb(cr, 0.24, 0.39, 0.57);
-    cairo_set_line_width(cr, 1.0);
-    cairo_rectangle(cr, 0.5, 0.5, w - 1, height / m_pixelScale - 1);
-    cairo_stroke(cr);
-    text(cr, "WINDOW SEARCH  /  ALL WORKSPACES", 18, 10, w - 36, 11, true);
+    SearchUI::panel(cr, w, height / m_pixelScale);
+    text(cr, "WINDOW SEARCH  /  ALL WORKSPACES", 18, 10, w - 36, 11, SearchUI::PROMPT);
 
     // Query scrolls horizontally to keep the codepoint cursor visible.
     auto* query = pango_cairo_create_layout(cr);
-    auto* font = pango_font_description_from_string("Sans");
+    auto* font = pango_font_description_from_string(SearchUI::FONT);
     pango_font_description_set_absolute_size(font, 20 * PANGO_SCALE);
     pango_layout_set_font_description(query, font);
     pango_layout_set_text(query, m_editor.text().c_str(), m_editor.text().size());
@@ -545,10 +545,10 @@ void COverviewSearch::buildTexture() {
     cairo_save(cr);
     cairo_rectangle(cr, 18, 31, w - 36, 34);
     cairo_clip(cr);
-    cairo_set_source_rgb(cr, 0.95, 0.97, 1.0);
+    SearchUI::color(cr, SearchUI::TEXT);
     cairo_move_to(cr, 18 - shift, 34);
     pango_cairo_show_layout(cr, query);
-    cairo_set_source_rgb(cr, 0.4, 0.75, 1.0);
+    SearchUI::color(cr, SearchUI::ACCENT);
     cairo_rectangle(cr, 18 + caret - shift, 34, 2, 25);
     cairo_fill(cr);
     cairo_restore(cr);
@@ -556,13 +556,13 @@ void COverviewSearch::buildTexture() {
     g_object_unref(query);
 
     if (m_matches.empty())
-        text(cr, "No matching windows", 18, 91, w - 36, 18, true);
+        text(cr, "No matching windows", 18, 91, w - 36, 18, SearchUI::MUTED);
     for (size_t row = 0; row < m_rows && m_first + row < m_matches.size(); ++row) {
         const size_t index = m_first + row;
         const auto& candidate = m_candidates[m_matches[index]];
         const double y = 76 + row * 58;
         if (index == m_selected) {
-            cairo_set_source_rgb(cr, 0.12, 0.23, 0.36);
+            SearchUI::color(cr, SearchUI::SELECTION);
             cairo_rectangle(cr, 8, y, w - 16, 55);
             cairo_fill(cr);
         }
@@ -580,13 +580,13 @@ void COverviewSearch::buildTexture() {
             detail += " [" + std::to_string(*candidate.workspaceNumber) + "]";
         if (monitor)
             detail += "  ·  " + monitor->m_name;
-        text(cr, detail, 18, y + 30, w - 36, 12, true);
+        text(cr, detail, 18, y + 30, w - 36, 12, SearchUI::PROMPT);
     }
     std::string footer = m_message;
     if (footer.empty())
         footer = std::to_string(m_matches.empty() ? 0 : m_selected + 1) + "/" + std::to_string(m_matches.size()) +
-            "   ↑↓ / Tab: select   Enter: show in overview   Esc: cancel";
-    text(cr, footer, 18, 83 + m_rows * 58, w - 36, 12, true);
+            "   ↑↓ / Tab / Ctrl-j/k/n/p: select   Enter: show   Esc: cancel";
+    text(cr, footer, 18, 83 + m_rows * 58, w - 36, 12, SearchUI::MUTED);
     cairo_destroy(cr);
     cairo_surface_flush(surface);
     m_texture = g_pHyprRenderer->createTexture(surface);

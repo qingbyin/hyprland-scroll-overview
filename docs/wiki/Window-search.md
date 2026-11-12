@@ -76,6 +76,9 @@ keystrokes. Already-cancelled events are left alone.
 - Left/Right move by one Unicode codepoint. Home/End move to either end.
   Backspace/Delete remove one codepoint. Ctrl+U clears the query.
 - Up/Down, Tab/Shift+Tab, and the mouse wheel select results, wrapping at ends.
+  Ctrl+J / Ctrl+N select the next result; Ctrl+K / Ctrl+P select the previous
+  result, with the same wrapping. These shortcuts leave the query and caret
+  unchanged. Additional Alt or Super modifiers do not select results.
   Page Up/Page Down move by one visible page.
 - Left-click a result to select it. Press Enter to confirm it.
 - Escape cancels only search. It does not select a result or close the overview.
@@ -113,6 +116,18 @@ workspace rename, and monitor changes trigger refreshes. Each render and input
 action also checks live metadata. Results retain weak window references, not
 owning pointers or title-based identities. A vanished or ineligible selection
 is not silently confirmed as a different window.
+
+## Appearance
+
+The search panel uses a snapshot of the local fuzzel Catppuccin Mocha theme:
+`monospace` text, background `#1e1e2e` with alpha `dd`, text `#cdd6f4`,
+secondary text `#bac2de`, muted text `#7f849c`, selection `#585b70`, and
+border/caret `#89b4fa`. The border is 1 logical pixel wide and its outer
+corner radius is 10 logical pixels. Corners outside the panel are transparent;
+monitor scaling applies to both the border and the radius.
+
+The plugin does not read `~/.config/fuzzel/fuzzel.ini` at runtime. Later edits
+to that file do not automatically change the plugin's appearance.
 
 ## Confirmation stays inside the overview
 
