@@ -256,9 +256,11 @@ CBox CWorkspaceTitleUI::titleBox(size_t index) const {
         return {};
     auto box = m_overview.workspaceTitlePreviewBox(index);
     const double height = std::clamp(ScrollOverview::Config::getValue<int>("plugin:scrolloverview:titles:height", monitor), 16, 128) * monitor->m_scale;
-    // Inset, rather than put the bar in workspace_gap: zero gap is supported.
+    const double offset = std::clamp(ScrollOverview::Config::getValue<int>("plugin:scrolloverview:titles:offset", monitor), 0, 128) * monitor->m_scale;
+    // Keep the workspace geometry unchanged; drawing and input share this box.
     // Never expand to the overflowing window extents of adjacent workspaces.
     box.height = std::min(box.height, height);
+    box.y -= offset;
     return box;
 }
 

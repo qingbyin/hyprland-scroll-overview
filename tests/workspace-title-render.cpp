@@ -65,7 +65,7 @@ struct CHyprColor { float r = 0, g = 0, b = 0, a = 1; };
 
 struct Settings {
     bool enabled = true;
-    int height = 40, fontSize = 22;
+    int height = 40, fontSize = 22, offset = 12;
     std::string font = "sans-serif";
 };
 struct Monitor {
@@ -87,6 +87,8 @@ namespace ScrollOverview::Config {
         } else if constexpr (std::is_same_v<T, int>) {
             if (key == "plugin:scrolloverview:titles:height")
                 return s.height;
+            if (key == "plugin:scrolloverview:titles:offset")
+                return s.offset;
             CHECK(key == "plugin:scrolloverview:titles:font_size");
             return s.fontSize;
         } else {
@@ -330,6 +332,8 @@ struct Fixture {
         g_imeTimer = std::make_unique<FakeTimer>();
         fakeDpi = 96;
         editorWidth = prefixMeasurements = 0;
+        // Existing rendering cases exercise the configurable legacy position.
+        monitor->settings.offset = 0;
         overview.pMonitor = monitor;
         g_store = std::make_unique<WorkspaceTitles::Store>();
         g_pHyprRenderer = &renderer;
@@ -547,6 +551,42 @@ void scalingAndBounds() {
     f.overview.previews[0].width += 1; // Force rasterization for the fallback DPI.
     f.render();
     CHECK(trace.raster.back().fontSize == 48);
+}
+void titleOffsetAndHitbox() {
+    for (const double scale : {1.0, 1.25, 2.0}) {
+        Fixture f;
+        f.monitor->m_scale = scale;
+        f.overview.previews[0] = {100 * scale, 100 * scale, 300 * scale, 200 * scale};
+        for (const int offset : {Settings{}.offset, 0, 24, -1, 999}) {
+            f.monitor->settings.offset = offset;
+            const double shift = std::clamp(offset, 0, 128) * scale;
+            const auto bar = f.ui.titleBox(0);
+            CHECK(sameBox(bar, {100 * scale, 100 * scale - shift, 300 * scale, 40 * scale}));
+            CHECK(bar.contains(bar.x + bar.width / 2, bar.y + bar.height / 2));
+            CHECK(!bar.contains(bar.x + bar.width / 2, bar.y + bar.height + scale));
+            CHECK(sameBox(f.overview.previews[0],
+                {100 * scale, 100 * scale, 300 * scale, 200 * scale}));
+        }
+        f.monitor->settings.offset = Settings{}.offset;
+        g_editor = &f.ui;
+        f.ui.m_selector = "1";
+        f.ui.m_inputPanel.preedit = "拼音";
+        f.render();
+        const auto bar = f.ui.titleBox(0);
+        CHECK(sameBox(trace.rectangles.front().box,
+            {bar.x, bar.y + bar.height - scale, bar.width, scale}));
+        CHECK(sameBox(trace.textures.front().clipBox, bar));
+        CHECK(f.ui.m_panelBox.y == bar.y + bar.height + 4 * scale);
+        const auto rasters = trace.raster.size();
+        f.monitor->settings.offset = 24;
+        f.render();
+        CHECK(trace.raster.size() == rasters); // Position changes reuse textures.
+        CHECK(f.ui.m_panelBox.y == bar.y - 12 * scale + bar.height + 4 * scale);
+        f.overview.previews[0].y = -40 * scale;
+        trace = {};
+        f.render();
+        CHECK(trace.submitted.empty()); // Offset title fully above the monitor.
+    }
 }
 void overlappingCardsAndRetry() {
     Fixture f;
@@ -948,6 +988,7 @@ int main() {
         {"clipped and offscreen title bars", clippingAndOffscreen},
         {"narrow bars still flush; short previews", narrowAndSmallBars},
         {"monitor scaling and configuration bounds", scalingAndBounds},
+        {"title offset, hitbox, popup and scale", titleOffsetAndHitbox},
         {"overlapping cards, selector identity and raster retry", overlappingCardsAndRetry},
         {"native prefix cache invalidation and measured editor budget", nativePrefixAndEditorBudget},
         {"long native names retain cursor space and UTF-8 boundaries", longNativePrefix},

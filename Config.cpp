@@ -429,6 +429,8 @@ static void defineConfigValues() {
                                    SIntValueOptions{.min = 6, .max = 64}));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:height", "workspace title bar height in logical pixels", 40,
                                    SIntValueOptions{.min = 16, .max = 128}));
+    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:offset", "upward workspace title offset in logical pixels", 12,
+                                   SIntValueOptions{.min = 0, .max = 128}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:cross_monitor_drag", "enable cross-monitor window dragging", false));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:input:scroll_event_delay", "minimum delay (ms) between discrete scroll steps (wheel workspace nav and trackpad focus stepping)", 200, SIntValueOptions{.min = 0}));
     addValue(makeShared<CFloatValue>("plugin:scrolloverview:input:touchpad_scroll_factor", "overview touchpad scroll factor", 1.F,
