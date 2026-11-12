@@ -430,6 +430,11 @@ void CWorkspaceTitleUI::render() {
     const auto fontWeight = pango_font_description_get_weight(fontDescription);
     pango_font_description_free(fontDescription);
     const auto format = ScrollOverview::Config::getValue<std::string>("plugin:scrolloverview:titles:format", monitor);
+    // Hyprland stores parsed colors as 0xAARRGGBB. Text textures contain RGB;
+    // apply the configured alpha at draw time, together with the overview fade.
+    const auto configuredColor = ScrollOverview::Config::getValue<Hyprlang::INT>("plugin:scrolloverview:titles:color", monitor);
+    const auto textRGB = configuredColor & 0xFFFFFF;
+    const float textAlpha = ((configuredColor >> 24) & 0xFF) / 255.F;
     const int configuredSize = std::clamp(ScrollOverview::Config::getValue<int>("plugin:scrolloverview:titles:font_size", monitor), 6, 64);
     std::unordered_set<std::string> live;
     auto& context = g_pHyprRenderer->context();
@@ -464,7 +469,7 @@ void CWorkspaceTitleUI::render() {
         auto text = active ? m_editor.text : g_store->get(selector);
         // Length-delimit fields so names, templates and titles cannot collide.
         // Check the cache before expansion, prefix measurement or rasterization.
-        const auto signature = std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", width, fontSize, font.size(), font, active,
+        const auto signature = std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", textRGB, width, fontSize, font.size(), font, active,
                                            active ? m_editor.cursor : 0, nativeName.size(), nativeName, format.size(), format, text);
         auto& cached = m_textures[selector];
         if (signature != cached.signature || (!cached.texture && !cached.empty)) {
@@ -527,7 +532,8 @@ void CWorkspaceTitleUI::render() {
             data.font = font;
             data.fontSize = fontSize;
             data.weight = fontWeight;
-            data.color = Hyprgraphics::CColor{Hyprgraphics::CColor::SSRGB{167.0 / 255.0, 175.0 / 255.0, 213.0 / 255.0}};
+            data.color = Hyprgraphics::CColor{Hyprgraphics::CColor::SSRGB{
+                ((textRGB >> 16) & 0xFF) / 255.0, ((textRGB >> 8) & 0xFF) / 255.0, (textRGB & 0xFF) / 255.0}};
             data.maxSize = Vector2D{static_cast<double>(width), bar.height};
             data.wrap = false;
             data.ellipsize = true;
@@ -539,7 +545,7 @@ void CWorkspaceTitleUI::render() {
             pass.add(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{
                 .tex = cached.texture,
                 .box = CBox{bar.x + (bar.width - size.x) / 2, bar.y + (bar.height - size.y) / 2, size.x, size.y},
-                .a = alpha,
+                .a = alpha * textAlpha,
                 .clipBox = bar,
             }));
         }

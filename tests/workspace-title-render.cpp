@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <dlfcn.h>
 #include <filesystem>
 #include <format>
@@ -68,8 +69,11 @@ struct CRegion {
 };
 struct CHyprColor { float r = 0, g = 0, b = 0, a = 1; };
 
+namespace Hyprlang { using INT = int64_t; }
+
 struct Settings {
     bool enabled = true;
+    Hyprlang::INT color = 0xFFA7AFD5;
     int height = 40, fontSize = 20, offset = 12;
     std::string font = "DejaVuSansM Nerd Font,FontAwesome 7 Free Semibold";
     std::string format = "$workspace    $title";
@@ -90,6 +94,9 @@ namespace ScrollOverview::Config {
         if constexpr (std::is_same_v<T, bool>) {
             CHECK(key == "plugin:scrolloverview:titles:enabled");
             return s.enabled;
+        } else if constexpr (std::is_same_v<T, Hyprlang::INT>) {
+            CHECK(key == "plugin:scrolloverview:titles:color");
+            return s.color;
         } else if constexpr (std::is_same_v<T, int>) {
             if (key == "plugin:scrolloverview:titles:height")
                 return s.height;
@@ -420,6 +427,9 @@ void configuredThemeDefaults() {
         CHECK(end != std::string::npos);
         return source.substr(begin, end - begin);
     };
+    const auto color = registration("plugin:scrolloverview:titles:color");
+    CHECK(color.contains(std::format("0x{:08X}", Settings{}.color)));
+    CHECK(source.contains("makeShared<CColorValue>(\"plugin:scrolloverview:titles:color\""));
     const auto format = registration("plugin:scrolloverview:titles:format");
     CHECK(format.contains("Hyprlang::STRING{\"" + Settings{}.format + "\"}"));
     const auto font = registration("plugin:scrolloverview:titles:font");
@@ -587,6 +597,75 @@ void formattedLabelsAndCache() {
     f.overview.pMonitor = other;
     f.render();
     CHECK(trace.raster.back().text == "中文    Saved");
+}
+void configurableTextColor() {
+    Fixture f;
+    f.render();
+    const auto defaultTexture = f.ui.m_textures.at("1").texture;
+    f.monitor->settings.color = 0xFF123456;
+    f.render();
+    CHECK(trace.raster.size() == 2);
+    CHECK(f.ui.m_textures.at("1").texture != defaultTexture);
+    const auto rgb = trace.raster.back().color.asRgb();
+    CHECK(rgb.r == 0x12 / 255.0 && rgb.g == 0x34 / 255.0 && rgb.b == 0x56 / 255.0);
+    CHECK(trace.textures.back().a == 1.F);
+    CHECK(trace.rectangles.empty()); // Color does not reintroduce a background.
+    const auto coloredTexture = f.ui.m_textures.at("1").texture;
+    f.render();
+    CHECK(trace.raster.size() == 2 && f.ui.m_textures.at("1").texture == coloredTexture);
+    f.monitor->settings.color = 0x80123456;
+    f.overview.alphas[0] = 0.5F;
+    f.render();
+    CHECK(trace.raster.size() == 2); // Alpha-only changes reuse RGB textures.
+    CHECK(std::abs(trace.textures.back().a - (128.F / 255.F) * 0.5F) < 0.00001F);
+    f.monitor->settings.color = 0x00123456;
+    trace = {};
+    f.render();
+    CHECK(trace.raster.empty() && trace.painted.empty());
+    CHECK(trace.textures.back().a == 0);
+    CHECK(!f.ui.titleBox(0).empty()); // Transparent text remains editable.
+
+    // The same color applies to the native prefix, draft and insertion cursor.
+    g_editor = &f.ui;
+    f.ui.m_selector = "1";
+    f.ui.m_editor = {"Draft", 2};
+    f.ui.m_inputPanel.preedit = "拼音";
+    f.monitor->settings.color = 0x80FFFFFF;
+    trace = {};
+    f.render();
+    CHECK(trace.raster.front().text == "1    Dr|aft");
+    const auto editingRGB = trace.raster.front().color.asRgb();
+    CHECK(editingRGB.r == 1 && editingRGB.g == 1 && editingRGB.b == 1);
+    CHECK(std::abs(trace.textures.front().a - (128.F / 255.F) * 0.5F) < 0.00001F);
+    CHECK(sameColor(trace.rectangles.front().color, 22, 160, 133, 0.5F));
+    CHECK(trace.textures.back().a == 0.5F); // Popup alpha is independent.
+    CHECK(std::abs(trace.rectangles.back().color.a - 0.98F * 0.5F) < 0.00001F);
+    const auto popupTexture = f.ui.m_panelTextures.front().texture;
+    f.monitor->settings.color = 0xFF000000;
+    trace = {};
+    f.render();
+    CHECK(trace.raster.size() == 1); // Only the title, not the popup, changes color.
+    const auto black = trace.raster.front().color.asRgb();
+    CHECK(black.r == 0 && black.g == 0 && black.b == 0);
+    CHECK(f.ui.m_panelTextures.front().texture == popupTexture);
+    f.ui.m_saveFailed = true;
+    trace = {};
+    f.render();
+    CHECK(trace.raster.empty());
+    CHECK(sameColor(trace.rectangles.front().color, 247, 118, 142, 0.5F));
+
+    f.ui.cancel();
+    auto other = std::make_shared<Monitor>();
+    f.overview.pMonitor = other;
+    trace = {};
+    f.render();
+    const auto otherRGB = trace.raster.back().color.asRgb();
+    CHECK(otherRGB.r == 167.0 / 255.0 && otherRGB.g == 175.0 / 255.0 && otherRGB.b == 213.0 / 255.0);
+    CHECK(trace.textures.back().a == 0.5F); // Other monitor retains the default color/alpha.
+    f.overview.pMonitor = f.monitor;
+    trace = {};
+    f.render();
+    CHECK(trace.raster.back().color.asRgb().r == 0);
 }
 void editingAndAlpha() {
     Fixture f;
@@ -1131,6 +1210,7 @@ int main() {
         {"enabled/closing/dependency guards and cancellation", guardsAndCancellation},
         {"texture reuse, invalidation and eviction", cacheAndInvalidation},
         {"formatted labels, empty output, editor and per-monitor cache", formattedLabelsAndCache},
+        {"title color, alpha, cache, editing and monitor overrides", configurableTextColor},
         {"editing, cursor cache, save failure and alpha", editingAndAlpha},
         {"clipped and offscreen title bars", clippingAndOffscreen},
         {"narrow bars still flush; short previews", narrowAndSmallBars},
