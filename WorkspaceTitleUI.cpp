@@ -467,7 +467,7 @@ void CWorkspaceTitleUI::render() {
         const auto signature = std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", width, fontSize, font.size(), font, active,
                                            active ? m_editor.cursor : 0, nativeName.size(), nativeName, format.size(), format, text);
         auto& cached = m_textures[selector];
-        if (signature != cached.signature || !cached.texture) {
+        if (signature != cached.signature || (!cached.texture && !cached.empty)) {
             if (active) {
                 auto prefix = nativeName + "    ";
                 // Leave most of the title bar to the editable text, even when
@@ -516,7 +516,8 @@ void CWorkspaceTitleUI::render() {
                 text = prefix + editorDisplay(m_editor, std::max(1, width - prefixWidth), fontSize, font);
             } else
                 text = WorkspaceTitles::formatTitle(format, nativeName, text);
-            if (text.empty()) {
+            cached.empty = text.empty();
+            if (cached.empty) {
                 cached.texture.reset();
                 cached.signature = signature;
                 continue;

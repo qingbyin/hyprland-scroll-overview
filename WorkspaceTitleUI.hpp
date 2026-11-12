@@ -35,6 +35,7 @@ class CWorkspaceTitleUI {
     struct STexture {
         std::string signature;
         SP<Render::ITexture> texture;
+        bool empty = false; // A successful empty label, not a failed raster.
     };
     CBox titleBox(size_t index) const;
     void begin(size_t index);

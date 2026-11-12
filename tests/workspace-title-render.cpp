@@ -345,7 +345,7 @@ class CWorkspaceTitleUI {
     void renderInputPanel();
     bool editing() const;
     void cancel();
-    struct STexture { std::string signature; SP<Render::ITexture> texture; };
+    struct STexture { std::string signature; SP<Render::ITexture> texture; bool empty = false; };
     CScrollOverview& m_overview;
     std::string m_selector;
     WorkspaceTitles::Editor m_editor;
@@ -558,6 +558,9 @@ void formattedLabelsAndCache() {
     f.render();
     CHECK(trace.raster.empty() && trace.submitted.empty());
     CHECK(!f.ui.m_textures.at("1").texture); // No stale text when output becomes empty.
+    CHECK(f.ui.m_textures.at("1").empty); // Empty output is cached, not a raster failure.
+    f.render();
+    CHECK(trace.raster.empty() && trace.submitted.empty());
     CHECK(!f.ui.titleBox(0).empty()); // Invisible text retains its editing hitbox.
     f.monitor->settings.format = "";
     g_store->values["1"] = "Saved";
@@ -575,6 +578,7 @@ void formattedLabelsAndCache() {
     f.monitor->settings.format = "$title";
     f.render();
     CHECK(trace.raster.back().text == "Saved");
+    CHECK(!f.ui.m_textures.at("1").empty);
     const auto bar = f.ui.titleBox(0);
     const auto size = trace.textures.back().tex->m_size;
     CHECK(trace.textures.back().box.x == bar.x + (bar.width - size.x) / 2);
