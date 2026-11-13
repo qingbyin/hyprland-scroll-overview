@@ -100,8 +100,10 @@ The edit underline is green (`#16a085`), or red (`#f7768e`) after a failed
 save. Text opacity is multiplied by the workspace fade; underlines also
 fade with the workspace. The IME candidate popup keeps its own background
 for readability.
-The bar is shifted upward by 12 logical pixels for more distance from window
-content; `titles:offset` adjusts this shift, and 0 restores its original position.
+`titles:position` selects `top` (default) or `bottom` placement on the
+workspace preview. The bar shifts outward by 12 logical pixels by default:
+upward at the top, downward at the bottom. `titles:offset` adjusts this shift;
+0 aligns the bar's outer edge with the corresponding preview edge.
 
 The `titles:format` string defaults to `$workspace    $title` (four spaces).
 In normal display, `$workspace` is Hyprland's native `displayName` (number or
@@ -119,6 +121,7 @@ Hyprlang, without string quotes or escaping:
 ```ini
 format = $workspace   $title
 color = rgba(a7afd5ff)
+position = bottom
 ```
 
 `color` accepts Hyprland colors such as `rgb(ffcc66)` or `rgba(ffcc6680)`.
@@ -137,6 +140,7 @@ hl.plugin.scrolloverview.configure({
     titles = {
         format = "$workspace   $title",
         color = "rgba(a7afd5ff)",
+        position = "bottom", -- "top" preserves the default placement
     },
 })
 ```

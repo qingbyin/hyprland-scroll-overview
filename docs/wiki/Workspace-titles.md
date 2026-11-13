@@ -106,6 +106,7 @@ plugin {
             font_size = 20
             color = rgba(a7afd5ff)
             height = 40
+            position = top
             offset = 12
         }
     }
@@ -136,13 +137,43 @@ background, or selection colors.
 
 `font_size` is the logical pixel font size, from 6 to 64. `height` is the
 logical pixel bar height, from 16 to 128. Text is reduced when necessary to
-fit a smaller bar. `offset` shifts the entire bar upward from the preview's
-top edge, from 0 to 128 logical pixels; 0 restores the original position.
+fit a smaller bar.
+
+`position` selects `top` (default) or `bottom` placement on the workspace
+preview. Values are lowercase; unknown values fall back to `top`.
+With `offset = 0`, the top bar's top edge aligns with the preview's top edge;
+the bottom bar's bottom edge aligns with the preview's bottom edge.
+The default `top` preserves the existing placement.
+
+`offset` shifts the entire bar outward, from 0 to 128 logical pixels:
+upward for `top`, downward for `bottom`. The default is 12.
 It is a position adjustment, not a guaranteed gap from every window, since
-window positions and decorations vary. The clickable editing area and input
-method popup follow the shifted bar. `enabled = false` disables titles and
-cancels an active title edit. An empty `format` only hides the normal display
-text; it does not disable the bar's clickable editing area.
+window positions and decorations vary. Preview geometry remains unchanged.
+The clickable editing area, edit underline, and input-method popup follow
+the bar. The popup moves above the bar if there is insufficient room below.
+Changing position preserves an active edit and reuses the text textures.
+
+For bottom placement in Hyprlang, set:
+
+```ini
+plugin:scrolloverview:titles:position = bottom
+```
+
+Lua supports the same option globally or per monitor:
+
+```lua
+hl.plugin.scrolloverview.configure({
+    output = "DP-1", -- omit for global settings
+    titles = {
+        position = "bottom",
+        offset = 12,
+    },
+})
+```
+
+`enabled = false` disables titles and cancels an active title edit.
+An empty `format` only hides the normal display text;
+it does not disable the bar's clickable editing area.
 
 ### Display format
 
