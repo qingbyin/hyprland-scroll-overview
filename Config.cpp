@@ -433,7 +433,9 @@ static void defineConfigValues() {
                                    SIntValueOptions{.min = 6, .max = 64}));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:height", "workspace title bar height in logical pixels", 40,
                                    SIntValueOptions{.min = 16, .max = 128}));
-    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:offset", "upward workspace title offset in logical pixels", 12,
+    addValue(makeShared<CStringValue>("plugin:scrolloverview:titles:position", "workspace title position: top or bottom (unknown values use top)",
+                                      Hyprlang::STRING{"top"}));
+    addValue(makeShared<CIntValue>("plugin:scrolloverview:titles:offset", "outward workspace title offset in logical pixels (up at top, down at bottom)", 12,
                                    SIntValueOptions{.min = 0, .max = 128}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:cross_monitor_drag", "enable cross-monitor window dragging", false));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:input:scroll_event_delay", "minimum delay (ms) between discrete scroll steps (wheel workspace nav and trackpad focus stepping)", 200, SIntValueOptions{.min = 0}));

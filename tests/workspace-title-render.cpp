@@ -77,6 +77,7 @@ struct Settings {
     int height = 40, fontSize = 20, offset = 12;
     std::string font = "DejaVuSansM Nerd Font,FontAwesome 7 Free Semibold";
     std::string format = "$workspace    $title";
+    std::string position = "top";
 };
 struct Monitor {
     double m_scale = 1;
@@ -108,6 +109,8 @@ namespace ScrollOverview::Config {
             static_assert(std::is_same_v<T, std::string>);
             if (key == "plugin:scrolloverview:titles:format")
                 return s.format;
+            if (key == "plugin:scrolloverview:titles:position")
+                return s.position;
             CHECK(key == "plugin:scrolloverview:titles:font");
             return s.font;
         }
@@ -427,6 +430,9 @@ void configuredThemeDefaults() {
         CHECK(end != std::string::npos);
         return source.substr(begin, end - begin);
     };
+    const auto position = registration("plugin:scrolloverview:titles:position");
+    CHECK(position.contains("Hyprlang::STRING{\"" + Settings{}.position + "\"}"));
+    CHECK(source.contains("makeShared<CStringValue>(\"plugin:scrolloverview:titles:position\""));
     const auto color = registration("plugin:scrolloverview:titles:color");
     CHECK(color.contains(std::format("0x{:08X}", Settings{}.color)));
     CHECK(source.contains("makeShared<CColorValue>(\"plugin:scrolloverview:titles:color\""));
@@ -804,6 +810,86 @@ void titleOffsetAndHitbox() {
         trace = {};
         f.render();
         CHECK(trace.submitted.empty()); // Offset title fully above the monitor.
+    }
+}
+void titlePositionAndEditing() {
+    for (const double scale : {1.0, 1.25, 2.0}) {
+        Fixture f;
+        f.monitor->m_scale = scale;
+        f.monitor->m_transformedSize = {800 * scale, 600 * scale};
+        const CBox preview{100 * scale, 100 * scale, 300 * scale, 200 * scale};
+        f.overview.previews[0] = preview;
+        for (const std::string position : {"top", "bottom", "invalid", ""}) {
+            f.monitor->settings.position = position;
+            for (const int offset : {Settings{}.offset, 0, 24, -1, 999}) {
+                f.monitor->settings.offset = offset;
+                const double shift = std::clamp(offset, 0, 128) * scale;
+                const double y = position == "bottom" ? 260 * scale + shift : 100 * scale - shift;
+                const auto bar = f.ui.titleBox(0);
+                CHECK(sameBox(bar, {100 * scale, y, 300 * scale, 40 * scale}));
+                CHECK(bar.contains(250 * scale, y + 20 * scale));
+                CHECK(!bar.contains(250 * scale, y - scale));
+                CHECK(!bar.contains(250 * scale, y + 41 * scale));
+                CHECK(sameBox(f.overview.previews[0], preview));
+            }
+        }
+        f.monitor->settings.position = "top";
+        f.monitor->settings.offset = Settings{}.offset;
+        g_editor = &f.ui;
+        f.ui.m_selector = "1";
+        f.ui.m_editor = {"Draft", 2};
+        f.ui.m_inputPanel.preedit = "拼音";
+        f.render();
+        const auto titleTexture = f.ui.m_textures.at("1").texture;
+        const auto panelTexture = f.ui.m_panelTextures.front().texture;
+        f.monitor->settings.position = "bottom";
+        trace = {};
+        f.render();
+        CHECK(trace.raster.empty()); // Moving titles does not rerasterize text.
+        CHECK(f.ui.m_textures.at("1").texture == titleTexture);
+        CHECK(f.ui.m_panelTextures.front().texture == panelTexture);
+        CHECK(f.ui.m_editor.text == "Draft" && f.ui.m_editor.cursor == 2);
+        const auto bar = f.ui.titleBox(0);
+        CHECK(sameBox(trace.textures.front().clipBox, bar));
+        CHECK(trace.textures.front().box.y == bar.y +
+            (bar.height - titleTexture->m_size.y) / 2);
+        CHECK(sameBox(trace.rectangles.front().box,
+            {bar.x, bar.y + bar.height - scale, bar.width, scale}));
+        CHECK(f.ui.m_panelBox.y == bar.y + bar.height + 4 * scale);
+        CHECK(!bar.contains(250 * scale, 108 * scale)); // Old top area is inactive.
+
+        // A second monitor retains the default top position.
+        auto other = std::make_shared<Monitor>();
+        other->m_scale = scale;
+        f.overview.pMonitor = other;
+        CHECK(sameBox(f.ui.titleBox(0), {100 * scale, 88 * scale, 300 * scale, 40 * scale}));
+        f.overview.pMonitor = f.monitor;
+        CHECK(sameBox(f.ui.titleBox(0), bar));
+
+        // Short previews retain their height; bottom anchoring must use it.
+        f.overview.previews[0].height = 8 * scale;
+        CHECK(sameBox(f.ui.titleBox(0), {100 * scale, 112 * scale, 300 * scale, 8 * scale}));
+        f.overview.previews[0] = preview;
+        f.overview.previews[0].y = 370 * scale;
+        f.render();
+        const auto lowBar = f.ui.titleBox(0);
+        CHECK(f.ui.m_panelBox.y + f.ui.m_panelBox.height == lowBar.y - 4 * scale);
+
+        // Clip a bottom title crossing the monitor edge, then hide it offscreen.
+        f.overview.previews[0].y = 420 * scale;
+        trace = {};
+        f.render();
+        const CBox screen{0, 0, 800 * scale, 600 * scale};
+        CHECK(!trace.submitted.empty());
+        for (const auto& paint : trace.painted)
+            CHECK(sameBox(intersect(paint.box, screen), paint.box));
+        f.overview.previews[0].y = 450 * scale;
+        trace = {};
+        f.render();
+        CHECK(trace.submitted.empty());
+        CHECK(f.ui.m_panelBox.empty());
+        f.overview.previews[0].height = -1;
+        CHECK(f.ui.titleBox(0).empty());
     }
 }
 void overlappingCardsAndRetry() {
@@ -1216,6 +1302,7 @@ int main() {
         {"narrow bars still flush; short previews", narrowAndSmallBars},
         {"monitor scaling and configuration bounds", scalingAndBounds},
         {"title offset, hitbox, popup and scale", titleOffsetAndHitbox},
+        {"top/bottom title position, editing, cache and screen bounds", titlePositionAndEditing},
         {"overlapping cards, selector identity and raster retry", overlappingCardsAndRetry},
         {"native prefix cache invalidation and measured editor budget", nativePrefixAndEditorBudget},
         {"long native names retain cursor space and UTF-8 boundaries", longNativePrefix},

@@ -259,8 +259,10 @@ CBox CWorkspaceTitleUI::titleBox(size_t index) const {
     const double offset = std::clamp(ScrollOverview::Config::getValue<int>("plugin:scrolloverview:titles:offset", monitor), 0, 128) * monitor->m_scale;
     // Keep the workspace geometry unchanged; drawing and input share this box.
     // Never expand to the overflowing window extents of adjacent workspaces.
-    box.height = std::min(box.height, height);
-    box.y -= offset;
+    const double barHeight = std::min(box.height, height);
+    const auto position = ScrollOverview::Config::getValue<std::string>("plugin:scrolloverview:titles:position", monitor);
+    box.y += position == "bottom" ? box.height - barHeight + offset : -offset;
+    box.height = barHeight;
     return box;
 }
 
